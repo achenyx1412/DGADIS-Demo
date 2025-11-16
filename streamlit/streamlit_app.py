@@ -46,143 +46,6 @@ ENTREZ_EMAIL = st.secrets.get("ENTREZ_EMAIL")
 
 Entrez.email = ENTREZ_EMAIL
 MAX_TOKENS = 128000
-
-@st.cache_resource(show_spinner="正在加载数据资源...")
-def load_all_resources():
-    try:
-        # --- 1. 检查 TOKEN ---
-        if not HF_TOKEN:
-            st.error("❌ 未找到 HF_TOKEN，请在 Streamlit Secrets 中配置")
-            st.info("在 Settings → Secrets 中添加：\nHF_TOKEN = \"hf_xxxxx\"")
-            st.stop()
-        
-        # --- 2. 直接下载 ZIP 文件 ---
-        st.info("📦 正在从 Hugging Face 下载数据文件...")
-        
-        # 创建目录
-        os.makedirs("data", exist_ok=True)
-        
-        # 下载 data.zip
-        zip_path = hf_hub_download(
-            repo_id="achenyx1412/DGADIS",
-            filename="data.zip",
-            repo_type="dataset",
-            token=HF_TOKEN,
-            cache_dir="./cache"
-        )
-        
-        st.success("✅ 数据文件下载成功")
-        
-        # --- 3. 解压 ---
-        st.info("📂 正在解压数据...")
-        with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(".")  # ✅ 解压到当前目录，这样会生成 data/data/ 结构
-        st.success("✅ 数据解压完成")
-        
-        # ✅ 文件实际路径是 data/data/文件名
-        data_path = "data/data"
-        
-        # --- 4. 加载 FAISS 索引 + 元数据 ---
-        st.info("🔍 正在加载 FAISS 索引...")
-        idx1 = faiss.read_index(f"{data_path}/faiss_node_desc.index")
-        with open(f"{data_path}/faiss_node_desc.pkl", "rb") as f:
-            meta1 = pickle.load(f)
-        
-        idx2 = faiss.read_index(f"{data_path}/faiss_node.index")
-        with open(f"{data_path}/faiss_node.pkl", "rb") as f:
-            meta2 = pickle.load(f)
-        
-        idx3 = faiss.read_index(f"{data_path}/faiss_triple3.index")
-        with open(f"{data_path}/faiss_triple3.pkl", "rb") as f:
-            meta3 = pickle.load(f)
-        st.success("✅ FAISS 索引加载完成")
-        
-        # --- 5. 加载图数据 ---
-        st.info("🕸️ 正在加载知识图谱...")
-        with open(f"{data_path}/kg.gpickle", "rb") as f:
-            G = pickle.load(f)
-        st.success("✅ 知识图谱加载完成")
-        
-        # --- 6. 加载模型 ---
-        st.info("🤖 正在加载 SapBERT 模型...")
-        sap_tokenizer = AutoTokenizer.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext")
-        sap_model = AutoModel.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext").to(DEVICE)
-        sap_model.eval()
-        st.success("✅ SapBERT 模型加载完成")
-        
-        st.info("🤖 正在加载 BGE-M3 模型...")
-        bi_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")
-        bi_model = AutoModel.from_pretrained("BAAI/bge-m3").to(DEVICE)
-        bi_model.eval()
-        st.success("✅ BGE-M3 模型加载完成")
-        
-        st.info("🤖 正在加载 BGE Reranker 模型...")
-        cross_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-reranker-v2-m3")
-        cross_model = AutoModelForSequenceClassification.from_pretrained("BAAI/bge-reranker-v2-m3").to(DEVICE)
-        cross_model.eval()
-        st.success("✅ BGE Reranker 模型加载完成")
-        
-        st.success("🎉 所有资源加载完成！")
-        
-        return {
-            "faiss": (idx1, meta1, idx2, meta2, idx3, meta3),
-            "graph": G,
-            "sap": (sap_tokenizer, sap_model),
-            "bi": (bi_tokenizer, bi_model),
-            "cross": (cross_tokenizer, cross_model)
-        }
-        
-    except Exception as e:
-        st.error(f"❌ 加载资源时出错: {str(e)}")
-        
-        with st.expander("🔍 错误详情"):
-            import traceback
-            st.code(traceback.format_exc())
-        st.stop()
-
-
-# ======================== 全局变量 ========================
-faiss_indices = {}
-metadata = {}
-graph = None
-merged_data = None
-tokenizer = None
-model = None
-bi_tokenizer = None
-bi_model = None
-cross_tokenizer = None
-cross_model = None
-llm = None
-name_search_engine = None
-compiled_graph = None
-
-# ======================== 状态定义 ========================
-class MyState(TypedDict):
-    messages: Annotated[List[AnyMessage], add_messages]
-    entity: list
-    target_label: list
-    neo4j_retrieval: dict
-    llm_answer: str
-    pubmed_search: str
-    wikipedia_search: str
-    api_search: str
-    route: str
-    sufficient_or_insufficient: str
-    interaction: str
-    summarized_query: str
-    parsed_query: str
-    user_reply: str
-
-
-label_list = [
-    "Topography and Morphology", "Chemicals, Drugs, and Biological Products",
-    "Physical Agents, Forces, and Medical Devices", "Diseases and Diagnoses",
-    "Procedures", "Living Organisms", "Social Context", "Symptoms, Signs, and Findings",
-    "Disciplines", "Relevant Persons and Populations", "Numbers",
-    "Physiological, Biochemical, and Molecular Mechanisms", "Scientific Terms and Methods",
-    "Others"
-]
-
 # ======================== 名称搜索引擎 ========================
 class NameSearchEngine:
     def __init__(self, merged_data_df):
@@ -227,6 +90,158 @@ class NameSearchEngine:
                 })
         results.sort(key=lambda x: x['similarity'], reverse=True)
         return [r['searched_name'] for r in results[:topk]]
+# ======================== 加载数据资源 ========================
+@st.cache_resource(show_spinner="正在加载数据资源...")
+def load_all_resources():
+    try:
+        # --- 1. 检查 TOKEN ---
+        if not HF_TOKEN:
+            st.error("❌ 未找到 HF_TOKEN，请在 Streamlit Secrets 中配置")
+            st.info("在 Settings → Secrets 中添加：\nHF_TOKEN = \"hf_xxxxx\"")
+            st.stop()
+        
+        # 创建目录
+        os.makedirs("data", exist_ok=True)
+        
+        # 定义所有需要下载的文件
+        files_to_download = [
+            "faiss_node+desc.index",
+            "faiss_node+desc.pkl",
+            "faiss_node.index",
+            "faiss_node.pkl",
+            "faiss_triple3.index",
+            "faiss_triple3.pkl",
+            "kg.gpickle",
+            "cengyongming"
+        ]
+        
+        # --- 2. 下载所有数据文件 ---
+        st.info("📦 正在从 Hugging Face 下载数据文件...")
+        
+        for filename in files_to_download:
+            st.text(f"⏳ 下载 {filename}...")
+            downloaded_path = hf_hub_download(
+                repo_id="achenyx1412/DGADIS",
+                filename=filename,
+                repo_type="dataset",
+                token=HF_TOKEN,
+                cache_dir="./cache"
+            )
+            
+            # 复制到 data 目录
+            import shutil
+            target_path = f"data/{filename}"
+            shutil.copy(downloaded_path, target_path)
+        
+        st.success("✅ 所有数据文件下载完成")
+        
+        # --- 3. 加载 FAISS 索引 + 元数据 ---
+        st.info("🔍 正在加载 FAISS 索引...")
+        
+        idx1 = faiss.read_index("data/faiss_node+desc.index")
+        with open("data/faiss_node+desc.pkl", "rb") as f:
+            meta1 = pickle.load(f)
+        
+        idx2 = faiss.read_index("data/faiss_node.index")
+        with open("data/faiss_node.pkl", "rb") as f:
+            meta2 = pickle.load(f)
+        
+        idx3 = faiss.read_index("data/faiss_triple3.index")
+        with open("data/faiss_triple3.pkl", "rb") as f:
+            meta3 = pickle.load(f)
+        
+        st.success("✅ FAISS 索引加载完成")
+        
+        # --- 4. 加载图数据 ---
+        st.info("🕸️ 正在加载知识图谱...")
+        with open("data/kg.gpickle", "rb") as f:
+            G = pickle.load(f)
+        st.success("✅ 知识图谱加载完成")
+        
+        st.info("🕸️ 正在加载名称表...")
+        with open('data/cengyongming.csv', "rb") as f:
+            search_engine = NameSearchEngine(f)
+        st.success("✅ 名称表加载完成")
+        
+        # --- 5. 加载模型 ---
+        st.info("🤖 正在加载 SapBERT 模型...")
+        sap_tokenizer = AutoTokenizer.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext")
+        sap_model = AutoModel.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext").to(DEVICE)
+        sap_model.eval()
+        st.success("✅ SapBERT 模型加载完成")
+        
+        st.info("🤖 正在加载 BGE-M3 模型...")
+        bi_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")
+        bi_model = AutoModel.from_pretrained("BAAI/bge-m3").to(DEVICE)
+        bi_model.eval()
+        st.success("✅ BGE-M3 模型加载完成")
+        
+        st.info("🤖 正在加载 BGE Reranker 模型...")
+        cross_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-reranker-v2-m3")
+        cross_model = AutoModelForSequenceClassification.from_pretrained("BAAI/bge-reranker-v2-m3").to(DEVICE)
+        cross_model.eval()
+        st.success("✅ BGE Reranker 模型加载完成")
+        
+        st.success("🎉 所有资源加载完成！")
+        
+        return {
+            "faiss": (idx1, meta1, idx2, meta2, idx3, meta3),
+            "graph": G,
+            "sap": (sap_tokenizer, sap_model),
+            "bi": (bi_tokenizer, bi_model),
+            "cross": (cross_tokenizer, cross_model)
+        }
+        
+    except Exception as e:
+        st.error(f"❌ 加载资源时出错: {str(e)}")
+        
+        with st.expander("🔍 错误详情"):
+            import traceback
+            st.code(traceback.format_exc())
+        st.stop()
+# ======================== 全局变量 ========================
+faiss_indices = {}
+metadata = {}
+graph = None
+merged_data = None
+tokenizer = None
+model = None
+bi_tokenizer = None
+bi_model = None
+cross_tokenizer = None
+cross_model = None
+llm = None
+name_search_engine = None
+compiled_graph = None
+
+# ======================== 状态定义 ========================
+class MyState(TypedDict):
+    messages: Annotated[List[AnyMessage], add_messages]
+    entity: list
+    target_label: list
+    neo4j_retrieval: dict
+    llm_answer: str
+    pubmed_search: str
+    wikipedia_search: str
+    api_search: str
+    route: str
+    sufficient_or_insufficient: str
+    interaction: str
+    summarized_query: str
+    parsed_query: str
+    user_reply: str
+
+
+label_list = [
+    "Topography and Morphology", "Chemicals, Drugs, and Biological Products",
+    "Physical Agents, Forces, and Medical Devices", "Diseases and Diagnoses",
+    "Procedures", "Living Organisms", "Social Context", "Symptoms, Signs, and Findings",
+    "Disciplines", "Relevant Persons and Populations", "Numbers",
+    "Physiological, Biochemical, and Molecular Mechanisms", "Scientific Terms and Methods",
+    "Others"
+]
+
+
 
 # ======================== 辅助函数 ========================
 def _extract_json_from_text(text: str) -> Dict[str, Any]:
@@ -818,7 +833,6 @@ def neo4j_retrieval(state: MyState, resources):
             candidates1 = [meta1[idx] for idx in I1[0]]
             D2, I2 = idx2.search(entity_embedding, topk)
             candidates2 = [meta2[idx] for idx in I2[0]]
-            search_engine = NameSearchEngine('data/cengyongming.csv')
             cand_names3 = search_engine.search(entity, topk=topk)
             name_list = []
             for cand in candidates1:
