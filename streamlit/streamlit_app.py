@@ -50,35 +50,42 @@ MAX_TOKENS = 128000
 @st.cache_resource(show_spinner="正在加载数据资源...")
 def load_all_resources():
     try:
-        # --- 1. 读取 HF dataset（使用 TOKEN）---
+        # --- 1. 检查 TOKEN ---
         if not HF_TOKEN:
             st.error("❌ 未找到 HF_TOKEN，请在 Streamlit Secrets 中配置")
             st.info("在 Settings → Secrets 中添加：\nHF_TOKEN = \"hf_xxxxx\"")
             st.stop()
         
-        st.info("📦 正在从 Hugging Face 下载数据集...")
-        dataset = load_dataset(
-            "achenyx1412/DGADIS",
-            token=HF_TOKEN
-        )
-        st.success("✅ 数据集下载成功")
+        # --- 2. 直接下载 ZIP 文件 ---
+        st.info("📦 正在从 Hugging Face 下载数据文件...")
         
         # 创建目录
         os.makedirs("data", exist_ok=True)
-        zip_path = "data/faiss_data.zip"
         
-        # 提取 zip 字节内容
-        st.info("📝 正在提取数据文件...")
-        with open(zip_path, "wb") as f:
-            f.write(dataset["train"][0]["bytes"])
+        # 直接下载 zip 文件（需要知道文件名）
+        # 假设文件名是 "faiss_data.zip"，如果不是，需要调整
+        zip_path = hf_hub_download(
+            repo_id="achenyx1412/DGADIS",
+            filename="faiss_data.zip",  # 根据实际文件名调整
+            repo_type="dataset",
+            token=HF_TOKEN,
+            cache_dir="./cache"
+        )
         
-        # --- 2. 解压 ---
+        st.success("✅ 数据文件下载成功")
+        
+        # 复制到 data 目录
+        import shutil
+        target_path = "data/faiss_data.zip"
+        shutil.copy(zip_path, target_path)
+        
+        # --- 3. 解压 ---
         st.info("📂 正在解压数据...")
-        with zipfile.ZipFile(zip_path, "r") as z:
+        with zipfile.ZipFile(target_path, "r") as z:
             z.extractall("data/")
         st.success("✅ 数据解压完成")
         
-        # --- 3. 加载 FAISS 索引 + 元数据 ---
+        # --- 4. 加载 FAISS 索引 + 元数据 ---
         st.info("🔍 正在加载 FAISS 索引...")
         idx1 = faiss.read_index("data/faiss_node+desc.index")
         with open("data/faiss_node+desc.pkl", "rb") as f:
@@ -93,13 +100,13 @@ def load_all_resources():
             meta3 = pickle.load(f)
         st.success("✅ FAISS 索引加载完成")
         
-        # --- 4. 加载图数据 ---
+        # --- 5. 加载图数据 ---
         st.info("🕸️ 正在加载知识图谱...")
         with open("data/kg.gpickle", "rb") as f:
             G = pickle.load(f)
         st.success("✅ 知识图谱加载完成")
         
-        # --- 5. 加载模型 ---
+        # --- 6. 加载模型 ---
         st.info("🤖 正在加载 SapBERT 模型...")
         sap_tokenizer = AutoTokenizer.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext")
         sap_model = AutoModel.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext").to(DEVICE)
