@@ -120,6 +120,8 @@ def load_all_resources():
             "bi": (bi_tokenizer, bi_model),
             "cross": (cross_tokenizer, cross_model)
         }
+    except Exception as e:
+        st.error(f"❌ 加载资源时出错: {str(e)}")
 
 
 # ======================== 全局变量 ========================
