@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 DS_API_KEY = st.secrets.get("DS_API_KEY")
 HF_TOKEN = st.secrets.get("HF_TOKEN")
 ENTREZ_EMAIL = st.secrets.get("ENTREZ_EMAIL")
-
+st.info(f"DS_API_KEY{DS_API_KEY},\nHF_TOKEN{HF_TOKEN},\n")
 Entrez.email = ENTREZ_EMAIL
 MAX_TOKENS = 128000
 
