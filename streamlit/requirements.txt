@@ -1,0 +1,16 @@
+streamlit
+gradio
+datasets
+transformers
+torch
+faiss-cpu
+pandas
+networkx
+tiktoken
+python-Levenshtein
+wikipedia
+biopython
+langchain
+langgraph
+langchain-core
+langchain-openai
