@@ -1037,29 +1037,7 @@ def neo4j_retrieval(state: MyState, resources):
         meta3 = pickle.load(f)
     with open("data/kg.gpickle", "rb") as f:
         G = pickle.load(f)
-    logger.info(f"meta1 type: {type(meta1)}")
-    logger.info(f"meta2 type: {type(meta2)}")
-    logger.info(f"meta3 type: {type(meta3)}")
-    
-    if isinstance(meta1, str):
-        logger.error(f"❌ meta1 is string: {meta1[:100]}")
-        st.error("FAISS 元数据加载错误：meta1 是字符串而不是数据结构")
-        return {"neo4j_retrieval": []}
-    
-    # 打印一些样本数据
-    if isinstance(meta1, list) and len(meta1) > 0:
-        logger.info(f"meta1[0] sample: {meta1[0]}")
-    elif isinstance(meta1, dict):
-        logger.info(f"meta1 keys: {list(meta1.keys())[:5]}")
-    logger.info("meta1 type:", type(meta1))
-    logger.info("meta1[0] type:", type(meta1[0]))
-    logger.info("meta1[0] content:", meta1[0])
-    if isinstance(meta1[0], str):
-        meta1 = [json.loads(m) for m in meta1]
-    if isinstance(meta2[0], str):
-        meta2 = [json.loads(m) for m in meta2]
-    if isinstance(meta3[0], str):
-        meta3 = [json.loads(m) for m in meta3]
+        
     #(idx1, meta1, idx2, meta2, idx3, meta3) = resources["faiss"]
     #G = resources["graph"]
     _, sap_api = resources["sap"]
