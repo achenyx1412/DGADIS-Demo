@@ -40,68 +40,86 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DS_API_KEY = os.getenv("DS_API_KEY")
-HF_TOKEN = os.getenv("HF_TOKEN")
-ENTREZ_EMAIL = os.getenv("ENTREZ_EMAIL")
+DS_API_KEY = st.secrets.get("DS_API_KEY")
+HF_TOKEN = st.secrets.get("HF_TOKEN")
+ENTREZ_EMAIL = st.secrets.get("ENTREZ_EMAIL")
 
 Entrez.email = ENTREZ_EMAIL
 MAX_TOKENS = 128000
-@st.cache_resource
+
+@st.cache_resource(show_spinner="正在加载数据资源...")
 def load_all_resources():
+    try:
+        # --- 1. 读取 HF dataset（使用 TOKEN）---
+        if not HF_TOKEN:
+            st.error("❌ 未找到 HF_TOKEN，请在 Streamlit Secrets 中配置")
+            st.info("在 Settings → Secrets 中添加：\nHF_TOKEN = \"hf_xxxxx\"")
+            st.stop()
+        
+        st.info("📦 正在从 Hugging Face 下载数据集...")
+        dataset = load_dataset(
+            "achenyx1412/DGADIS",
+            token=HF_TOKEN  # 传入 token
+        )
+        st.success("✅ 数据集下载成功")
 
-    # --- 1. 读取 HF dataset ---
-    dataset = load_dataset("achenyx1412/DGADIS")
+        # 创建目录
+        os.makedirs("data", exist_ok=True)
 
-    # 创建目录
-    os.makedirs("data", exist_ok=True)
+        zip_path = "data/faiss_data.zip"
 
-    zip_path = "data/faiss_data.zip"
+        # 提取 zip 字节内容
+        st.info("📝 正在提取数据文件...")
+        with open(zip_path, "wb") as f:
+            f.write(dataset["train"][0]["bytes"])
 
-    # 提取 zip 字节内容
-    with open(zip_path, "wb") as f:
-        f.write(dataset["train"][0]["bytes"])
+        # --- 2. 解压 ---
+        st.info("📂 正在解压数据...")
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall("data/")
+        st.success("✅ 数据解压完成")
 
-    # --- 2. 解压 ---
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall("data/")
+        # --- 3. 加载 FAISS 索引 + 元数据 ---
+        st.info("🔍 正在加载 FAISS 索引...")
+        idx1 = faiss.read_index("data/faiss_node+desc.index")
+        with open("data/faiss_node+desc.pkl", "rb") as f:
+            meta1 = pickle.load(f)
 
-    # --- 3. 加载 FAISS 索引 + 元数据 ---
-    idx1 = faiss.read_index("data/faiss_node+desc.index")
-    with open("data/faiss_node+desc.pkl", "rb") as f:
-        meta1 = pickle.load(f)
+        idx2 = faiss.read_index("data/faiss_node.index")
+        with open("data/faiss_node.pkl", "rb") as f:
+            meta2 = pickle.load(f)
 
-    idx2 = faiss.read_index("data/faiss_node.index")
-    with open("data/faiss_node.pkl", "rb") as f:
-        meta2 = pickle.load(f)
+        idx3 = faiss.read_index("data/faiss_triple3.index")
+        with open("data/faiss_triple3.pkl", "rb") as f:
+            meta3 = pickle.load(f)
+        st.success("✅ FAISS 索引加载完成")
 
-    idx3 = faiss.read_index("data/faiss_triple3.index")
-    with open("data/faiss_triple3.pkl", "rb") as f:
-        meta3 = pickle.load(f)
+        # --- 4. 加载图数据 ---
+        st.info("🕸️ 正在加载知识图谱...")
+        with open("data/kg.gpickle", "rb") as f:
+            G = pickle.load(f)
+        st.success("✅ 知识图谱加载完成")
 
-    # --- 4. 加载图数据 ---
-    with open("data/kg.gpickle", "rb") as f:
-        G = pickle.load(f)
+        # --- 5. 加载模型 ---
+        sap_tokenizer = AutoTokenizer.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext")
+        sap_model = AutoModel.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext").to(DEVICE)
+        sap_model.eval()
+    
+        bi_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")
+        bi_model = AutoModel.from_pretrained("BAAI/bge-m3").to(DEVICE)
+        bi_model.eval()
 
-    # --- 5. 加载模型 ---
-    sap_tokenizer = AutoTokenizer.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext")
-    sap_model = AutoModel.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext").to(DEVICE)
-    sap_model.eval()
+        cross_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-reranker-v2-m3")
+        cross_model = AutoModelForSequenceClassification.from_pretrained("BAAI/bge-reranker-v2-m3").to(DEVICE)
+        cross_model.eval()
 
-    bi_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")
-    bi_model = AutoModel.from_pretrained("BAAI/bge-m3").to(DEVICE)
-    bi_model.eval()
-
-    cross_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-reranker-v2-m3")
-    cross_model = AutoModelForSequenceClassification.from_pretrained("BAAI/bge-reranker-v2-m3").to(DEVICE)
-    cross_model.eval()
-
-    return {
-        "faiss": (idx1, meta1, idx2, meta2, idx3, meta3),
-        "graph": G,
-        "sap": (sap_tokenizer, sap_model),
-        "bi": (bi_tokenizer, bi_model),
-        "cross": (cross_tokenizer, cross_model)
-    }
+        return {
+            "faiss": (idx1, meta1, idx2, meta2, idx3, meta3),
+            "graph": G,
+            "sap": (sap_tokenizer, sap_model),
+            "bi": (bi_tokenizer, bi_model),
+            "cross": (cross_tokenizer, cross_model)
+        }
 
 
 # ======================== 全局变量 ========================
