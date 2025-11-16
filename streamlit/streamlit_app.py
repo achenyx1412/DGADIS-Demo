@@ -378,10 +378,6 @@ def embed_entity(text, sap_api):
 
     return emb
     
-    except Exception as e:
-        logger.error(f"Error embedding entity: {str(e)}")
-        # 返回零向量作为后备
-        return np.zeros(768, dtype=np.float32)
 def fix_embedding(emb):
     if isinstance(emb, str):
         emb = np.array(json.loads(emb), dtype=np.float32)
