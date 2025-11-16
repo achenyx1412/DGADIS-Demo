@@ -158,8 +158,7 @@ def load_all_resources():
         st.success("✅ 知识图谱加载完成")
         
         st.info("🕸️ 正在加载名称表...")
-        with open('data/cengyongming.csv', "rb") as f:
-            search_engine = NameSearchEngine(f)
+        search_engine = NameSearchEngine('data/cengyongming.csv')
         st.success("✅ 名称表加载完成")
         
         # --- 5. 加载模型 ---
