@@ -1051,7 +1051,7 @@ def neo4j_retrieval(state: MyState, resources):
     path_kv: Dict[str, str] = {}
     for entity in entity_list:
         try:
-            entity_embedding2 = embed_entity(parsed_query, sap_api)
+            entity_embedding2 = embed_entity(parsed_query, sap_api).astype('float32').reshape(1, -1)
             D, I = idx3.search(entity_embedding2, 5)
             candidate_triples = [meta3[idx] for idx in I[0]]
             cand_info = [{
@@ -1063,7 +1063,7 @@ def neo4j_retrieval(state: MyState, resources):
             "tail": cand.get("tail", ""),
             "tail_desc": cand.get("tail_desc", "")}
             for cand in candidate_triples]
-            entity_embedding = embed_entity(entity, sap_api)
+            entity_embedding = embed_entity(entity, sap_api).astype('float32').reshape(1, -1)
             D1, I1 = idx1.search(entity_embedding, topk)
             candidates1 = [meta1[idx] for idx in I1[0]]
             D2, I2 = idx2.search(entity_embedding, topk)
