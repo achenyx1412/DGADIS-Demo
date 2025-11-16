@@ -1,24 +1,36 @@
---extra-index-url https://download.pytorch.org/whl/cpu
+# Core
+streamlit>=1.28.0
 
-torch==2.2.0+cpu
-faiss-cpu==1.7.4
+# ML & Transformers
+transformers>=4.35.0
+torch>=2.0.0
+sentence-transformers>=2.2.0
 
-transformers==4.37.0
-datasets==2.16.1
-huggingface-hub==0.20.3
+# Hugging Face
+datasets>=2.14.0
+huggingface-hub>=0.19.0
 
-streamlit==1.32.0
-pandas
-numpy
-requests
-tiktoken
-python-Levenshtein
-wikipedia
-biopython
-networkx
+# Vector Search
+faiss-cpu>=1.7.4
 
-langchain-core==0.1.30
-langchain-openai==0.0.8
-langgraph==0.0.26
+# Data Processing
+numpy>=1.24.0
+pandas>=2.0.0
 
-jsonschema
+# LangChain
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-openai>=0.0.5
+langgraph>=0.0.20
+
+# Graph & NLP
+networkx>=3.0
+python-Levenshtein>=0.21.0
+tiktoken>=0.5.0
+
+# APIs
+wikipedia>=1.4.0
+biopython>=1.81
+
+# Utils
+python-dotenv>=1.0.0
