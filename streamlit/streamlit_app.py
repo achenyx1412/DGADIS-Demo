@@ -1077,8 +1077,10 @@ def neo4j_retrieval(state: MyState, resources):
                 logger.info(f"idx2 returned {len(candidates2)} candidates")
             except Exception as e:
                 logger.warning(f"idx2 search failed: {str(e)}")
+                
+            cengyongming_df = pd.read_csv("data/cengyongming.csv")
+            search_engine = NameSearchEngine(cengyongming_df)
 
-            search_engine = NameSearchEngine('data/cengyongming.csv')
             cand_names3 = search_engine.search(entity, topk=topk)
             name_list = []
             for cand in candidates1:
