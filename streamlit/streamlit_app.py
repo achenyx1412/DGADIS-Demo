@@ -16,7 +16,7 @@ from Levenshtein import distance as lev_distance
 import wikipedia
 from Bio import Entrez
 import streamlit as st
-
+from huggingface_hub import hf_hub_download
 # LangChain imports
 from langchain_core.messages import AIMessage, HumanMessage, AnyMessage
 from langchain_core.prompts import PromptTemplate
