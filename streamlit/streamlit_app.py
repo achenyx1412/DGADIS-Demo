@@ -1015,6 +1015,12 @@ def neo4j_retrieval(state: MyState, resources):
         meta3 = pickle.load(f)
     with open("data/kg.gpickle", "rb") as f:
         G = pickle.load(f)
+    if isinstance(meta1[0], str):
+        meta1 = [json.loads(m) for m in meta1]
+    if isinstance(meta2[0], str):
+        meta2 = [json.loads(m) for m in meta2]
+    if isinstance(meta3[0], str):
+        meta3 = [json.loads(m) for m in meta3]
     #(idx1, meta1, idx2, meta2, idx3, meta3) = resources["faiss"]
     #G = resources["graph"]
     _, sap_api = resources["sap"]
