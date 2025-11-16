@@ -1032,7 +1032,15 @@ def neo4j_retrieval(state: MyState, resources):
         try:
             entity_embedding2 = embed_entity(parsed_query, sap_api).astype('float32').reshape(1, -1)
             D, I = idx3.search(entity_embedding2, 5)
-            candidate_triples = [meta3[idx] for idx in I[0]]
+            candidate_triples = []
+            for idx in I[0]:
+                idx_int = int(idx)  # ✅ 确保是 Python int
+                if 0 <= idx_int < len(meta3):
+                    candidate_triples.append(meta3[idx_int])
+                else:
+                    logger.warning(f"Index {idx_int} out of range for meta3 (len={len(meta3)})")
+                    
+            logger.info(f"Found {len(candidate_triples)} candidate triples")
             cand_info = [{
             "head": cand.get("head", ""),
             "head_desc": cand.get("head_desc", ""),
@@ -1042,11 +1050,34 @@ def neo4j_retrieval(state: MyState, resources):
             "tail": cand.get("tail", ""),
             "tail_desc": cand.get("tail_desc", "")}
             for cand in candidate_triples]
+            
             entity_embedding = embed_entity(entity, sap_api).astype('float32').reshape(1, -1)
-            D1, I1 = idx1.search(entity_embedding, topk)
-            candidates1 = [meta1[idx] for idx in I1[0]]
-            D2, I2 = idx2.search(entity_embedding, topk)
-            candidates2 = [meta2[idx] for idx in I2[0]]
+            candidates1 = []
+            try:
+                D1, I1 = idx1.search(entity_embedding, topk)
+                for idx in I1[0]:
+                    idx_int = int(idx)
+                    if 0 <= idx_int < len(meta1):
+                        candidates1.append(meta1[idx_int])
+                    else:
+                        logger.warning(f"Index {idx_int} out of range for meta1")
+                logger.info(f"idx1 returned {len(candidates1)} candidates")
+            except Exception as e:
+                logger.warning(f"idx1 search failed: {str(e)}")
+
+            candidates2 = []
+            try:
+                D2, I2 = idx2.search(entity_embedding, topk)
+                for idx in I2[0]:
+                    idx_int = int(idx)
+                    if 0 <= idx_int < len(meta2):
+                        candidates2.append(meta2[idx_int])
+                    else:
+                        logger.warning(f"Index {idx_int} out of range for meta2")
+                logger.info(f"idx2 returned {len(candidates2)} candidates")
+            except Exception as e:
+                logger.warning(f"idx2 search failed: {str(e)}")
+
             search_engine = NameSearchEngine('data/cengyongming.csv')
             cand_names3 = search_engine.search(entity, topk=topk)
             name_list = []
