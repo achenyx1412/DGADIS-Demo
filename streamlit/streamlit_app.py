@@ -59,60 +59,67 @@ def load_all_resources():
         st.info("📦 正在从 Hugging Face 下载数据集...")
         dataset = load_dataset(
             "achenyx1412/DGADIS",
-            token=HF_TOKEN  # 传入 token
+            token=HF_TOKEN
         )
         st.success("✅ 数据集下载成功")
-
+        
         # 创建目录
         os.makedirs("data", exist_ok=True)
-
         zip_path = "data/faiss_data.zip"
-
+        
         # 提取 zip 字节内容
         st.info("📝 正在提取数据文件...")
         with open(zip_path, "wb") as f:
             f.write(dataset["train"][0]["bytes"])
-
+        
         # --- 2. 解压 ---
         st.info("📂 正在解压数据...")
         with zipfile.ZipFile(zip_path, "r") as z:
             z.extractall("data/")
         st.success("✅ 数据解压完成")
-
+        
         # --- 3. 加载 FAISS 索引 + 元数据 ---
         st.info("🔍 正在加载 FAISS 索引...")
         idx1 = faiss.read_index("data/faiss_node+desc.index")
         with open("data/faiss_node+desc.pkl", "rb") as f:
             meta1 = pickle.load(f)
-
+        
         idx2 = faiss.read_index("data/faiss_node.index")
         with open("data/faiss_node.pkl", "rb") as f:
             meta2 = pickle.load(f)
-
+        
         idx3 = faiss.read_index("data/faiss_triple3.index")
         with open("data/faiss_triple3.pkl", "rb") as f:
             meta3 = pickle.load(f)
         st.success("✅ FAISS 索引加载完成")
-
+        
         # --- 4. 加载图数据 ---
         st.info("🕸️ 正在加载知识图谱...")
         with open("data/kg.gpickle", "rb") as f:
             G = pickle.load(f)
         st.success("✅ 知识图谱加载完成")
-
+        
         # --- 5. 加载模型 ---
+        st.info("🤖 正在加载 SapBERT 模型...")
         sap_tokenizer = AutoTokenizer.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext")
         sap_model = AutoModel.from_pretrained("cambridgeltl/SapBERT-from-PubMedBERT-fulltext").to(DEVICE)
         sap_model.eval()
-    
+        st.success("✅ SapBERT 模型加载完成")
+        
+        st.info("🤖 正在加载 BGE-M3 模型...")
         bi_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")
         bi_model = AutoModel.from_pretrained("BAAI/bge-m3").to(DEVICE)
         bi_model.eval()
-
+        st.success("✅ BGE-M3 模型加载完成")
+        
+        st.info("🤖 正在加载 BGE Reranker 模型...")
         cross_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-reranker-v2-m3")
         cross_model = AutoModelForSequenceClassification.from_pretrained("BAAI/bge-reranker-v2-m3").to(DEVICE)
         cross_model.eval()
-
+        st.success("✅ BGE Reranker 模型加载完成")
+        
+        st.success("🎉 所有资源加载完成！")
+        
         return {
             "faiss": (idx1, meta1, idx2, meta2, idx3, meta3),
             "graph": G,
@@ -120,8 +127,14 @@ def load_all_resources():
             "bi": (bi_tokenizer, bi_model),
             "cross": (cross_tokenizer, cross_model)
         }
+        
     except Exception as e:
         st.error(f"❌ 加载资源时出错: {str(e)}")
+        
+        with st.expander("🔍 错误详情"):
+            import traceback
+            st.code(traceback.format_exc())
+        st.stop()
 
 
 # ======================== 全局变量 ========================
