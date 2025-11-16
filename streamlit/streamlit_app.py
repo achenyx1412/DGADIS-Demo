@@ -349,45 +349,21 @@ def _extract_json_from_text(text: str) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
-def embed_entity(text, sap_api):
-    emb = sap_api.encode(text, normalize=True)
+def embed_entity(text: str, api):
+    try:
+        emb = api.encode([text], normalize=True)
 
-    # 如果是字符串 → 转 numpy
-    if isinstance(emb, str):
-        try:
-            emb = np.array(json.loads(emb), dtype=np.float32)
-        except Exception:
-            logger.error("Sap API returned string but not valid JSON")
-            return np.zeros(768, dtype=np.float32)
+        # emb shape 应该是 (1, dim)
+        if isinstance(emb, np.ndarray) and len(emb.shape) == 2:
+            return emb[0].astype('float32')
 
-    # 如果是 list → 转 numpy
-    if isinstance(emb, list):
-        emb = np.array(emb, dtype=np.float32)
+        # 如果错误格式
+        raise RuntimeError("API returned unexpected embedding format")
 
-    # 如果是 2D → 取第一行
-    if len(emb.shape) > 1:
-        emb = emb[0]
-
-    # 如果不是 float → 强转
-    emb = emb.astype(np.float32, copy=False)
-
-    # 如果维度不正确 → fallback
-    if emb.shape[0] != 768:
-        logger.error(f"Embedding dim wrong: got {emb.shape}, expected 768")
-        return np.zeros(768, dtype=np.float32)
-
-    return emb
-    
-def fix_embedding(emb):
-    if isinstance(emb, str):
-        emb = np.array(json.loads(emb), dtype=np.float32)
-    if isinstance(emb, list):
-        emb = np.array(emb, dtype=np.float32)
-    # batch → flatten
-    if len(emb.shape) > 1:
-        emb = emb[0]
-    return emb.astype(np.float32)
-
+    except Exception as e:
+        logger.error(f"embedding error: {e}")
+        return np.zeros(768, dtype='float32')
+        
 def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
     """
     使用 API 进行路径重排序
@@ -404,7 +380,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
     try:
         # --- 1. 使用 BGE-M3 API 获取 query embedding ---
         st.info("🔍 正在计算查询向量...")
-        query_emb = fix_embedding(bi_api.encode([query_text], normalize=True))
+        query_emb = bi_api.encode([query_text], normalize=True)  # shape: (1, dim)
         
         # --- 2. 获取所有候选路径的 embeddings ---
         path_keys = list(path_kv.keys())
@@ -424,7 +400,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
             st.text(f"⏳ 处理批次 {i//batch_size + 1}/{(len(path_keys)-1)//batch_size + 1}...")
             
             # 调用 API 获取 embeddings
-            batch_embs = fix_embedding(bi_api.encode(batch, normalize=True))
+            batch_embs = bi_api.encode(batch, normalize=True)
             all_cand_embs.append(batch_embs)
         
         # 合并所有批次的 embeddings
@@ -472,7 +448,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
         
         top30 = rerank_final[:30]
         top30_values = [path_kv[pk] for pk, _ in top30]
-        st.info(f"知识图谱检索结果：{rerank_final[:1]}")
+        
         logger.info(f"Cross-encoder reranked top 30 paths")
         st.success(f"✅ 完成！返回 top {len(top30_values)} 个结果")
         
@@ -1033,9 +1009,7 @@ def neo4j_retrieval(state: MyState, resources):
         meta3 = pickle.load(f)
     with open("data/kg.gpickle", "rb") as f:
         G = pickle.load(f)
-        
-    #(idx1, meta1, idx2, meta2, idx3, meta3) = resources["faiss"]
-    #G = resources["graph"]
+
     _, sap_api = resources["sap"]
     _, bi_api = resources["bi"]
     _, cross_api = resources["cross"]
