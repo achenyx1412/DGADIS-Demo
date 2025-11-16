@@ -1,3 +1,7 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.1.0+cpu
+faiss-cpu
 
 streamlit
 requests
@@ -8,20 +12,14 @@ python-Levenshtein
 wikipedia
 biopython
 
-
 datasets
 transformers
 huggingface-hub
-
-torch
-faiss-cpu
-
 
 networkx
 
 langchain-core
 langchain-openai
 langgraph
-
 
 jsonschema
