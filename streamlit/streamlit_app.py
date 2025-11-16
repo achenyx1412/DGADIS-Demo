@@ -480,7 +480,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
         
         top30 = rerank_final[:30]
         top30_values = [path_kv[pk] for pk, _ in top30]
-        
+        st.info(f"知识图谱检索结果：{rerank_final[:1]}")
         logger.info(f"Cross-encoder reranked top 30 paths")
         st.success(f"✅ 完成！返回 top {len(top30_values)} 个结果")
         
@@ -898,25 +898,34 @@ chain2 = knowledge_router_prompt_en | LLM
 final_answer_prompt_en = PromptTemplate(
     input_variables=["query", "neo4j_retrieval", "api_search_result"],
     template = """
-You are an expert dental medicine AI assistant. Answer the essay question using the provided context.
-**Essay Question:**
+You are a highly authoritative dental medicine AI assistant. Respond with the tone and reasoning style of an experienced clinical dentist. Always provide clear, confident, and expert-level explanations.
+
+Essay Question:
 {query}
 
-**Knowledge Graph Information:**
+Knowledge Graph Information:
 {neo4j_retrieval}
 
-**External Search (PubMed, Wikipedia):**
+External Search (PubMed, Wikipedia):
 {api_search_result}
 
-**Requirements:**
-- Answer the question based on the context above.
-- If the context is insufficient, reply by your own knowledge and tell the user that you couldn't find relevant information.
-- Always provide a 'Source' field at the end of your answer:
-  * If the answer is based on the knowledge graph, include the corresponding edge's `chunk_id`.
-  * If the answer is based on PubMed, include the `DOI`.
-  * If the answer is based on Wikipedia, include `"wikipedia"`.
-  * If the answer is generated from your internal knowledge, include `"LLM_database"`.
+Requirements:
 
+Prioritize the provided context when forming your answer.
+
+When context is insufficient, rely on your own expert dental knowledge. Provide a confident, clinically grounded explanation.
+
+Maintain a professional, precise, and authoritative dental-specialist tone.
+
+Always include a Source field at the end:
+
+Use the knowledge-graph edge’s chunk_id when applicable.
+
+Use the PubMed article’s DOI when applicable.
+
+Use "wikipedia" when drawing from Wikipedia.
+
+Use "LLM_database" when the answer is based on your internal professional knowledge.
 """
 )
 chain3 = final_answer_prompt_en | LLM
