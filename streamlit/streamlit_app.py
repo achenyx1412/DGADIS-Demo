@@ -45,50 +45,7 @@ ENTREZ_EMAIL = st.secrets.get("ENTREZ_EMAIL")
 
 Entrez.email = ENTREZ_EMAIL
 MAX_TOKENS = 128000
-# ======================== 名称搜索引擎 ========================
-class NameSearchEngine:
-    def __init__(self, merged_data_df):
-        self.merged_data = merged_data_df
-        self.merged_data['原名列表'] = self.merged_data['原名列表'].apply(
-            lambda x: eval(x) if isinstance(x, str) else x
-        )
-        self.current_to_old_map = {}
-        self.all_names_map = {}
-        
-        for _, row in self.merged_data.iterrows():
-            现用名 = row['现用名']
-            原名列表 = row['原名列表']
-            self.current_to_old_map[现用名] = 原名列表
-            self.all_names_map[现用名] = 现用名
-            for 原名 in 原名列表:
-                self.all_names_map[原名] = 现用名
-        
-        self.searchable_names = list(self.all_names_map.keys())
-    
-    def calculate_similarity(self, str1, str2):
-        if not str1 or not str2:
-            return 0.0
-        edit_distance = lev_distance(str1, str2)
-        max_length = max(len(str1), len(str2))
-        if max_length == 0:
-            return 1.0
-        return max(0.0, 1 - (edit_distance / max_length))
-    
-    def search(self, query, topk=5, similarity_threshold=0.3):
-        query = str(query).strip()
-        if not query:
-            return []
-        results = []
-        for name in self.searchable_names:
-            similarity = self.calculate_similarity(query, name)
-            if similarity >= similarity_threshold:
-                现用名 = self.all_names_map[name]
-                results.append({
-                    'searched_name': 现用名,
-                    'similarity': similarity
-                })
-        results.sort(key=lambda x: x['similarity'], reverse=True)
-        return [r['searched_name'] for r in results[:topk]]
+
 # ======================== 加载数据资源 ========================
 @st.cache_resource(show_spinner="正在加载数据资源...")
 def load_all_resources():
@@ -156,11 +113,6 @@ def load_all_resources():
         with open("data/kg.gpickle", "rb") as f:
             G = pickle.load(f)
         st.success("✅ 知识图谱加载完成")
-        
-        st.info("🕸️ 正在加载名称表...")
-        cengyongming_df = pd.read_csv('data/cengyongming.csv')
-        search_engine = NameSearchEngine(cengyongming_df)
-        st.success("✅ 名称表加载完成")
         
         # --- 5. 加载模型 ---
         st.info("🤖 正在加载 SapBERT 模型...")
@@ -241,7 +193,50 @@ label_list = [
 ]
 
 
-
+# ======================== 名称搜索引擎 ========================
+class NameSearchEngine:
+    def __init__(self, merged_data_df):
+        self.merged_data = merged_data_df
+        self.merged_data['原名列表'] = self.merged_data['原名列表'].apply(
+            lambda x: eval(x) if isinstance(x, str) else x
+        )
+        self.current_to_old_map = {}
+        self.all_names_map = {}
+        
+        for _, row in self.merged_data.iterrows():
+            现用名 = row['现用名']
+            原名列表 = row['原名列表']
+            self.current_to_old_map[现用名] = 原名列表
+            self.all_names_map[现用名] = 现用名
+            for 原名 in 原名列表:
+                self.all_names_map[原名] = 现用名
+        
+        self.searchable_names = list(self.all_names_map.keys())
+    
+    def calculate_similarity(self, str1, str2):
+        if not str1 or not str2:
+            return 0.0
+        edit_distance = lev_distance(str1, str2)
+        max_length = max(len(str1), len(str2))
+        if max_length == 0:
+            return 1.0
+        return max(0.0, 1 - (edit_distance / max_length))
+    
+    def search(self, query, topk=5, similarity_threshold=0.3):
+        query = str(query).strip()
+        if not query:
+            return []
+        results = []
+        for name in self.searchable_names:
+            similarity = self.calculate_similarity(query, name)
+            if similarity >= similarity_threshold:
+                现用名 = self.all_names_map[name]
+                results.append({
+                    'searched_name': 现用名,
+                    'similarity': similarity
+                })
+        results.sort(key=lambda x: x['similarity'], reverse=True)
+        return [r['searched_name'] for r in results[:topk]]
 # ======================== 辅助函数 ========================
 def _extract_json_from_text(text: str) -> Dict[str, Any]:
     try:
@@ -832,6 +827,7 @@ def neo4j_retrieval(state: MyState, resources):
             candidates1 = [meta1[idx] for idx in I1[0]]
             D2, I2 = idx2.search(entity_embedding, topk)
             candidates2 = [meta2[idx] for idx in I2[0]]
+            search_engine = NameSearchEngine('data/cengyongming.csv')
             cand_names3 = search_engine.search(entity, topk=topk)
             name_list = []
             for cand in candidates1:
