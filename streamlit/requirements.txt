@@ -1,25 +1,24 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-torch==2.1.0+cpu
-faiss-cpu
+torch==2.2.0+cpu
+faiss-cpu==1.7.4
 
-streamlit
-requests
-numpy
+transformers==4.37.0
+datasets==2.16.1
+huggingface-hub==0.20.3
+
+streamlit==1.32.0
 pandas
+numpy
+requests
 tiktoken
 python-Levenshtein
 wikipedia
 biopython
-
-datasets
-transformers
-huggingface-hub
-
 networkx
 
-langchain-core
-langchain-openai
-langgraph
+langchain-core==0.1.30
+langchain-openai==0.0.8
+langgraph==0.0.26
 
 jsonschema
