@@ -62,11 +62,10 @@ def load_all_resources():
         # 创建目录
         os.makedirs("data", exist_ok=True)
         
-        # 直接下载 zip 文件（需要知道文件名）
-        # 假设文件名是 "faiss_data.zip"，如果不是，需要调整
+        # ✅ 正确的文件名是 "data.zip"
         zip_path = hf_hub_download(
             repo_id="achenyx1412/DGADIS",
-            filename="faiss_data.zip",  # 根据实际文件名调整
+            filename="data.zip",  # ✅ 修改为正确的文件名
             repo_type="dataset",
             token=HF_TOKEN,
             cache_dir="./cache"
@@ -76,7 +75,7 @@ def load_all_resources():
         
         # 复制到 data 目录
         import shutil
-        target_path = "data/faiss_data.zip"
+        target_path = "data/data.zip"
         shutil.copy(zip_path, target_path)
         
         # --- 3. 解压 ---
