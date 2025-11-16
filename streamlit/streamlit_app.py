@@ -112,7 +112,7 @@ def load_all_resources():
             "faiss_triple3.index",
             "faiss_triple3.pkl",
             "kg.gpickle",
-            "cengyongming"
+            "cengyongming.csv"
         ]
         
         # --- 2. 下载所有数据文件 ---
