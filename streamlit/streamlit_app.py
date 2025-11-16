@@ -5,9 +5,7 @@ from typing import List, Tuple, Annotated, TypedDict, Dict, Any, Optional, Liter
 from datasets import load_dataset
 import pickle
 import faiss
-import torch
-import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModel, AutoModelForSequenceClassification
+
 import pandas as pd
 import networkx as nx
 import tiktoken
@@ -38,7 +36,7 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModel, AutoModelForSequenceClassification
 
 encoding = tiktoken.get_encoding("cl100k_base")
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
