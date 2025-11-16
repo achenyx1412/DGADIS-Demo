@@ -349,27 +349,48 @@ def _extract_json_from_text(text: str) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
-def embed_entity(entity_text: str, sap_api):
-    """
-    使用 SapBERT API 获取实体的 embedding
-    """
-    if not sap_api:
-        raise ValueError("SapBERT API not initialized")
-    
-    try:
-        # 使用 API 获取 embedding
-        embedding = sap_api.encode(entity_text, normalize=True)
-        
-        # 如果返回的是二维数组，取第一个
-        if len(embedding.shape) > 1:
-            embedding = embedding[0]
-        
-        return embedding
+def embed_entity(text, sap_api):
+    emb = sap_api.encode(text, normalize=True)
+
+    # 如果是字符串 → 转 numpy
+    if isinstance(emb, str):
+        try:
+            emb = np.array(json.loads(emb), dtype=np.float32)
+        except Exception:
+            logger.error("Sap API returned string but not valid JSON")
+            return np.zeros(768, dtype=np.float32)
+
+    # 如果是 list → 转 numpy
+    if isinstance(emb, list):
+        emb = np.array(emb, dtype=np.float32)
+
+    # 如果是 2D → 取第一行
+    if len(emb.shape) > 1:
+        emb = emb[0]
+
+    # 如果不是 float → 强转
+    emb = emb.astype(np.float32, copy=False)
+
+    # 如果维度不正确 → fallback
+    if emb.shape[0] != 768:
+        logger.error(f"Embedding dim wrong: got {emb.shape}, expected 768")
+        return np.zeros(768, dtype=np.float32)
+
+    return emb
     
     except Exception as e:
         logger.error(f"Error embedding entity: {str(e)}")
         # 返回零向量作为后备
         return np.zeros(768, dtype=np.float32)
+def fix_embedding(emb):
+    if isinstance(emb, str):
+        emb = np.array(json.loads(emb), dtype=np.float32)
+    if isinstance(emb, list):
+        emb = np.array(emb, dtype=np.float32)
+    # batch → flatten
+    if len(emb.shape) > 1:
+        emb = emb[0]
+    return emb.astype(np.float32)
 
 def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
     """
@@ -387,7 +408,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
     try:
         # --- 1. 使用 BGE-M3 API 获取 query embedding ---
         st.info("🔍 正在计算查询向量...")
-        query_emb = bi_api.encode([query_text], normalize=True)  # shape: (1, dim)
+        query_emb = fix_embedding(bi_api.encode([query_text], normalize=True))
         
         # --- 2. 获取所有候选路径的 embeddings ---
         path_keys = list(path_kv.keys())
@@ -407,7 +428,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
             st.text(f"⏳ 处理批次 {i//batch_size + 1}/{(len(path_keys)-1)//batch_size + 1}...")
             
             # 调用 API 获取 embeddings
-            batch_embs = bi_api.encode(batch, normalize=True)
+            batch_embs = fix_embedding(bi_api.encode(batch, normalize=True))
             all_cand_embs.append(batch_embs)
         
         # 合并所有批次的 embeddings
