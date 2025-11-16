@@ -873,7 +873,7 @@ chain2 = knowledge_router_prompt_en | LLM
 final_answer_prompt_en = PromptTemplate(
     input_variables=["query", "neo4j_retrieval", "api_search_result"],
     template = """
-You are a highly authoritative dental medicine AI assistant. Respond with the tone and reasoning style of an experienced clinical dentist. Always provide clear, confident, and expert-level explanations.
+You are a highly authoritative dental medicine AI assistant. Respond with the tone and reasoning style of an experienced clinical dentist. Always provide clear, confident, and expert-level explanations in English.
 
 Essay Question:
 {query}
@@ -901,6 +901,7 @@ Use the PubMed article’s DOI when applicable.
 Use "wikipedia" when drawing from Wikipedia.
 
 Use "LLM_database" when the answer is based on your internal professional knowledge.
+Your answer must be in English
 """
 )
 chain3 = final_answer_prompt_en | LLM
@@ -1015,6 +1016,9 @@ def neo4j_retrieval(state: MyState, resources):
         meta3 = pickle.load(f)
     with open("data/kg.gpickle", "rb") as f:
         G = pickle.load(f)
+    print("meta1 type:", type(meta1))
+    print("meta1[0] type:", type(meta1[0]))
+    print("meta1[0] content:", meta1[0])
     if isinstance(meta1[0], str):
         meta1 = [json.loads(m) for m in meta1]
     if isinstance(meta2[0], str):
