@@ -62,10 +62,10 @@ def load_all_resources():
         # 创建目录
         os.makedirs("data", exist_ok=True)
         
-        # ✅ 正确的文件名是 "data.zip"
+        # 下载 data.zip
         zip_path = hf_hub_download(
             repo_id="achenyx1412/DGADIS",
-            filename="data.zip",  # ✅ 修改为正确的文件名
+            filename="data.zip",
             repo_type="dataset",
             token=HF_TOKEN,
             cache_dir="./cache"
@@ -73,35 +73,33 @@ def load_all_resources():
         
         st.success("✅ 数据文件下载成功")
         
-        # 复制到 data 目录
-        import shutil
-        target_path = "data/data.zip"
-        shutil.copy(zip_path, target_path)
-        
         # --- 3. 解压 ---
         st.info("📂 正在解压数据...")
-        with zipfile.ZipFile(target_path, "r") as z:
-            z.extractall("data/")
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall(".")  # ✅ 解压到当前目录，这样会生成 data/data/ 结构
         st.success("✅ 数据解压完成")
+        
+        # ✅ 文件实际路径是 data/data/文件名
+        data_path = "data/data"
         
         # --- 4. 加载 FAISS 索引 + 元数据 ---
         st.info("🔍 正在加载 FAISS 索引...")
-        idx1 = faiss.read_index("data/faiss_node+desc.index")
-        with open("data/faiss_node+desc.pkl", "rb") as f:
+        idx1 = faiss.read_index(f"{data_path}/faiss_node+desc.index")
+        with open(f"{data_path}/faiss_node+desc.pkl", "rb") as f:
             meta1 = pickle.load(f)
         
-        idx2 = faiss.read_index("data/faiss_node.index")
-        with open("data/faiss_node.pkl", "rb") as f:
+        idx2 = faiss.read_index(f"{data_path}/faiss_node.index")
+        with open(f"{data_path}/faiss_node.pkl", "rb") as f:
             meta2 = pickle.load(f)
         
-        idx3 = faiss.read_index("data/faiss_triple3.index")
-        with open("data/faiss_triple3.pkl", "rb") as f:
+        idx3 = faiss.read_index(f"{data_path}/faiss_triple3.index")
+        with open(f"{data_path}/faiss_triple3.pkl", "rb") as f:
             meta3 = pickle.load(f)
         st.success("✅ FAISS 索引加载完成")
         
         # --- 5. 加载图数据 ---
         st.info("🕸️ 正在加载知识图谱...")
-        with open("data/kg.gpickle", "rb") as f:
+        with open(f"{data_path}/kg.gpickle", "rb") as f:
             G = pickle.load(f)
         st.success("✅ 知识图谱加载完成")
         
