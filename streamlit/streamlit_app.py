@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 DS_API_KEY = st.secrets.get("DS_API_KEY")
 HF_TOKEN = st.secrets.get("HF_TOKEN")
 ENTREZ_EMAIL = st.secrets.get("ENTREZ_EMAIL")
-st.info(f"DS_API_KEY{DS_API_KEY},\nHF_TOKEN{HF_TOKEN},\n")
+
 Entrez.email = ENTREZ_EMAIL
 MAX_TOKENS = 128000
 
@@ -549,7 +549,7 @@ def search_wikipedia(wikipedia_query, max_chars_per_entity=500) -> str:
         return f"error in Wikipedia: {str(e)}"
 
 # ======================== Prompt 模板 ========================
-LLM = ChatOpenAI(model="deepseek-chat",api_key=DS_API_KEY,base_url="https://api.deepseek.com/v1",temperature=0.0)
+LLM = ChatOpenAI(model="deepseek-reasoner",api_key=DS_API_KEY,base_url="https://api.deepseek.com/v1",temperature=0.0)
 extract_prompt_en = PromptTemplate(
     input_variables=["query", "label_list"],
     template="""
@@ -1315,7 +1315,7 @@ if st.button("Submit Query"):
         st.session_state["graph_state"] = new_state
         # 记录用户提问（可选）
         st.session_state["conversation_history"].append(("user", user_input.strip()))
-        st.experimental_rerun()  # 立即重新渲染以展示 new_state
+        st.rerun()
 
 # 如果已经有 graph_state（说明流程正在进行或已完成）
 state = st.session_state.get("graph_state")
@@ -1341,7 +1341,7 @@ if state:
                 new_state = invoke_graph_with_state(graph, state_input)
                 st.session_state["graph_state"] = new_state
                 st.session_state["conversation_history"].append(("user", reply.strip()))
-                st.experimental_rerun()
+                st.rerun()
 
     else:
         # 如果不需要补充，查看是否有最终答案（llm_answer）
@@ -1357,7 +1357,7 @@ if state:
             if st.button("Start new question"):
                 st.session_state["graph_state"] = None
                 st.session_state["conversation_history"] = []
-                st.experimental_rerun()
+                st.rerun()
         else:
             # 情况：既不需要补充也没有 llm_answer —— 输出当前 state 以便排查
             st.write("Current state (no further action):")
