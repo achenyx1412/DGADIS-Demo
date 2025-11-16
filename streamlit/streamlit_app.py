@@ -84,8 +84,8 @@ def load_all_resources():
         
         # --- 4. 加载 FAISS 索引 + 元数据 ---
         st.info("🔍 正在加载 FAISS 索引...")
-        idx1 = faiss.read_index(f"{data_path}/faiss_node+desc.index")
-        with open(f"{data_path}/faiss_node+desc.pkl", "rb") as f:
+        idx1 = faiss.read_index(f"{data_path}/faiss_node_desc.index")
+        with open(f"{data_path}/faiss_node_desc.pkl", "rb") as f:
             meta1 = pickle.load(f)
         
         idx2 = faiss.read_index(f"{data_path}/faiss_node.index")
