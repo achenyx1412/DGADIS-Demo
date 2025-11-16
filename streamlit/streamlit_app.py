@@ -209,31 +209,8 @@ def load_all_resources():
             shutil.copy(downloaded_path, f"data/{filename}")
         
         st.success("✅ 所有文件下载完成")
-        
-        # --- 3. 加载 FAISS ---
-        st.info("🔍 正在加载 FAISS 索引...")
-        
-        idx1 = faiss.read_index("data/faiss_node+desc.index")
-        with open("data/faiss_node+desc.pkl", "rb") as f:
-            meta1 = pickle.load(f)
-        
-        idx2 = faiss.read_index("data/faiss_node.index")
-        with open("data/faiss_node.pkl", "rb") as f:
-            meta2 = pickle.load(f)
-        
-        idx3 = faiss.read_index("data/faiss_triple3.index")
-        with open("data/faiss_triple3.pkl", "rb") as f:
-            meta3 = pickle.load(f)
-        
-        st.success("✅ FAISS 索引加载完成")
-        
-        # --- 4. 加载图数据 ---
-        st.info("🕸️ 正在加载知识图谱...")
-        with open("data/kg.gpickle", "rb") as f:
-            G = pickle.load(f)
-        st.success("✅ 知识图谱加载完成")
-        
-        # --- 5. 初始化模型 API（不下载模型）---
+
+        # --- 初始化模型 API（不下载模型）---
         st.info("🌐 正在初始化模型 API 连接...")
         
         # SapBERT API
@@ -260,8 +237,6 @@ def load_all_resources():
         st.success("🎉 所有资源加载完成！（使用 API 模式，内存占用极低）")
         
         return {
-            "faiss": (idx1, meta1, idx2, meta2, idx3, meta3),
-            "graph": G,
             "sap": (None, sap_api),
             "bi": (None, bi_api),
             "cross": (None, cross_api)
@@ -1029,8 +1004,19 @@ def whether_to_interact(state):
 
 
 def neo4j_retrieval(state: MyState, resources):
-    (idx1, meta1, idx2, meta2, idx3, meta3) = resources["faiss"]
-    G = resources["graph"]
+    idx1 = faiss.read_index("data/faiss_node+desc.index")
+    with open("data/faiss_node+desc.pkl", "rb") as f:
+        meta1 = pickle.load(f)
+    idx2 = faiss.read_index("data/faiss_node.index")
+    with open("data/faiss_node.pkl", "rb") as f:
+        meta2 = pickle.load(f)
+    idx3 = faiss.read_index("data/faiss_triple3.index")
+    with open("data/faiss_triple3.pkl", "rb") as f:
+        meta3 = pickle.load(f)
+    with open("data/kg.gpickle", "rb") as f:
+        G = pickle.load(f)
+    #(idx1, meta1, idx2, meta2, idx3, meta3) = resources["faiss"]
+    #G = resources["graph"]
     _, sap_api = resources["sap"]
     _, bi_api = resources["bi"]
     _, cross_api = resources["cross"]
