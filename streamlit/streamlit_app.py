@@ -189,7 +189,7 @@ def _extract_json_from_text(text: str) -> Dict[str, Any]:
 def embed_entity(entity_text: str):
     """使用API进行实体嵌入"""
     if not hf_client:
-        raise ValueError("SAPBERT client not initialized")
+        raise ValueError("HuggingFace client not initialized")
     
     try:
         # 调用feature_extraction API
@@ -198,7 +198,10 @@ def embed_entity(entity_text: str):
             model="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
         )
         # API返回的是numpy数组，取平均得到句子嵌入
-        embedding = result.mean(axis=1).squeeze()
+        if hasattr(result, 'shape') and len(result.shape) > 1:
+            embedding = result.mean(axis=1).squeeze()
+        else:
+            embedding = result
         return embedding
     except Exception as e:
         logger.error(f"Embedding API call failed: {e}")
@@ -770,7 +773,9 @@ def neo4j_retrieval(state: MyState, resources):
     path_kv: Dict[str, str] = {}
     for entity in entity_list:
         try:
-            entity_embedding2 = embed_entity(parsed_query).reshape(1, -1)
+            entity_embedding2 = embed_entity(parsed_query)
+             if len(entity_embedding2.shape) == 1:
+                 entity_embedding2 = entity_embedding2.reshape(1, -1)
             D, I = idx3.search(entity_embedding2, 5)
             candidate_triples = []
             for idx in I[0]:
@@ -791,7 +796,9 @@ def neo4j_retrieval(state: MyState, resources):
             "tail_desc": cand.get("tail_desc", "")}
             for cand in candidate_triples]
             
-            entity_embedding = embed_entity(entity).reshape(1, -1)
+            entity_embedding = embed_entity(entity)
+            if len(entity_embedding.shape) == 1:
+                entity_embedding = entity_embedding.reshape(1, -1)
             candidates1 = []
             try:
                 D1, I1 = idx1.search(entity_embedding, topk)
@@ -894,72 +901,115 @@ def neo4j_retrieval(state: MyState, resources):
                 path_value = f"[{i['head']}:{i['head_desc']}]--[{i['rel']}:{i['rel_desc']}]-->[{i['tail']}:{i['tail_desc']}]"
                 if path_key not in path_kv:
                     path_kv[path_key] = path_value
+
         except Exception as e:
-            logger.warning(f"'{entity}'failed in faiss {e}")
+            logger.warning(f"'{entity}' failed in faiss: {e}")
+            # 添加调试信息
+            logger.debug(f"Entity: {entity}, Embedding shape: {entity_embedding.shape if 'entity_embedding' in locals() else 'N/A'}")
             continue
+
     try:
-        # 使用API进行句子相似度计算（替代双编码器）
         if not hf_client:
-            raise ValueError("bi_model client not initialized")
+            raise ValueError("HuggingFace client not initialized")
             
         path_keys = list(path_kv.keys())
         
-        # 使用sentence_similarity API计算相似度
-        similarity_result = hf_client.sentence_similarity(
-            {
-                "source_sentence": query_text,
-                "sentences": path_keys
-            },
+        if not path_keys:
+            logger.warning("No paths found for reranking")
+            return {"neo4j_retrieval": []}
+        
+        # 方法1: 使用feature_extraction手动计算相似度（更可靠）
+        logger.info("Calculating similarity scores using feature extraction...")
+        
+        # 获取查询的嵌入
+        query_embedding = hf_client.feature_extraction(
+            query_text,
             model="BAAI/bge-m3",
         )
+        if hasattr(query_embedding, 'shape') and len(query_embedding.shape) > 1:
+            query_embedding = query_embedding.mean(axis=1).squeeze()
         
-        sim_scores = similarity_result  # API直接返回相似度分数列表
+        # 批量获取候选路径的嵌入并计算相似度
+        batch_size = 16
+        sim_scores = []
+        
+        for i in range(0, len(path_keys), batch_size):
+            batch_keys = path_keys[i:i + batch_size]
+            try:
+                # 获取批次嵌入
+                batch_embeddings = hf_client.feature_extraction(
+                    batch_keys,
+                    model="BAAI/bge-m3",
+                )
+                
+                # 计算余弦相似度
+                for j, key_embedding in enumerate(batch_embeddings):
+                    if hasattr(key_embedding, 'shape') and len(key_embedding.shape) > 1:
+                        key_embedding = key_embedding.mean(axis=1).squeeze()
+                    
+                    # 计算余弦相似度
+                    similarity = np.dot(query_embedding, key_embedding) / (
+                        np.linalg.norm(query_embedding) * np.linalg.norm(key_embedding)
+                    )
+                    sim_scores.append(float(similarity))
+                    
+            except Exception as batch_error:
+                logger.warning(f"Batch similarity calculation error: {batch_error}")
+                # 为失败的批次添加默认分数
+                sim_scores.extend([0.0] * len(batch_keys))
+        
         scored_paths = list(zip(path_keys, sim_scores))
         scored_paths.sort(key=lambda x: x[1], reverse=True)
-
         top100 = scored_paths[:100]
+
+        # 重排序部分
+        logger.info("Performing cross-encoder reranking...")
         
-        # 使用API进行重排序（替代交叉编码器）
-        if not hf_client:
-            raise ValueError("cross_model client not initialized")
-            
         # 准备重排序的文本对
-        rerank_pairs = [
-            f"{query_text} [SEP] {path_key}" 
-            for path_key, _ in top100
-        ]
+        rerank_inputs = []
+        for path_key, score in top100:
+            # 构造适合重排序的输入格式
+            rerank_inputs.append(f"{query_text} [SEP] {path_key}")
         
-        # 批量进行文本分类（重排序）
         all_cross_scores = []
-        cross_batch_size = 16
+        cross_batch_size = 8  # 减小批次大小避免超时
         
-        for i in range(0, len(rerank_pairs), cross_batch_size):
-            batch_pairs = rerank_pairs[i:i + cross_batch_size]
+        for i in range(0, len(rerank_inputs), cross_batch_size):
+            batch_inputs = rerank_inputs[i:i + cross_batch_size]
             try:
                 # 调用text_classification API进行重排序
                 batch_results = hf_client.text_classification(
-                    batch_pairs,
+                    batch_inputs,
                     model="BAAI/bge-reranker-v2-m3",
                 )
-                # 提取分数（假设返回的是相关度分数）
-                batch_scores = [result.score if hasattr(result, 'score') else result[0]['score'] 
-                              for result in batch_results]
+                
+                # 提取分数
+                batch_scores = []
+                for result in batch_results:
+                    if hasattr(result, 'score'):
+                        batch_scores.append(result.score)
+                    elif isinstance(result, list) and len(result) > 0:
+                        batch_scores.append(result[0]['score'])
+                    else:
+                        batch_scores.append(0.5)  # 默认分数
+                        
                 all_cross_scores.extend(batch_scores)
-            except Exception as e:
-                logger.warning(f"Batch reranking error: {e}")
-                # 如果失败，给这个批次默认分数
-                all_cross_scores.extend([0.5] * len(batch_pairs))
+                
+            except Exception as rerank_error:
+                logger.warning(f"Reranking batch error: {rerank_error}")
+                all_cross_scores.extend([0.5] * len(batch_inputs))
 
         rerank_final = list(zip([p[0] for p in top100], all_cross_scores))
         rerank_final.sort(key=lambda x: x[1], reverse=True)
         top30 = rerank_final[:30]
 
         top30_values = [path_kv[pk] for pk, _ in top30]
-        logger.info(f"Cross-encoder reranked 30 path: {top30_values[:3]}")
+        logger.info(f"Cross-encoder reranked 30 paths")
         return {"neo4j_retrieval": top30_values}
 
     except Exception as e:
-        logger.warning(f"rerank error: {e}")
+        logger.warning(f"Rerank error: {e}")
+        # 返回所有路径作为后备
         fallback_values = list(path_kv.values())[:50]
         return {"neo4j_retrieval": fallback_values}
 
