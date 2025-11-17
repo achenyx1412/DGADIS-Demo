@@ -15,15 +15,15 @@ from Bio import Entrez
 import requests
 import numpy as np
 import streamlit as st
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, InferenceClient
+from datasets import load_dataset
+import zipfile
 
 from langchain_core.messages import AIMessage, HumanMessage, AnyMessage
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
-from datasets import load_dataset
-import zipfile
 
 
 
@@ -34,42 +34,39 @@ logger = logging.getLogger(__name__)
 
 DS_API_KEY = st.secrets.get("DS_API_KEY")
 HF_TOKEN = st.secrets.get("HF_TOKEN")
+hf_client = InferenceClient(provider="hf-inference", api_key=HF_TOKEN)
 ENTREZ_EMAIL = st.secrets.get("ENTREZ_EMAIL")
 
 Entrez.email = ENTREZ_EMAIL
 MAX_TOKENS = 128000
 
 # ======================== 加载数据资源 ========================
-class HuggingFaceEmbeddingAPI:
-
-
-    def __init__(self, model_name: str, api_token: str):
+class HuggingFaceSapBERTEmbeddingAPI:
+    """
+    使用 Hugging Face Inference API 获取 SapBERT token embedding 并做 mean pooling
+    适用于实体或短文本向量化
+    """
+    def __init__(self, model_name: str, api_token: str, embedding_dim: int = 768):
         self.model_name = model_name
         self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
         self.headers = {
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json"
         }
-        self.embedding_dim = 1024   # ★ BGE-large 的维度
+        self.embedding_dim = embedding_dim
 
     def _mean_pooling(self, token_embeddings):
         """对 token embeddings 做 mean pooling"""
-
         arr = np.array(token_embeddings, dtype=np.float32)
-
-        if arr.ndim == 2:                # (seq_len, 1024)
-            emb = arr.mean(axis=0)
-
-        elif arr.ndim == 3:              # (1, seq_len, 1024)
-            emb = arr.mean(axis=1).squeeze(0)
-
+        if arr.ndim == 2:
+            return arr.mean(axis=0)
+        elif arr.ndim == 3:
+            return arr.mean(axis=1).squeeze(0)
         else:
-            emb = np.zeros(self.embedding_dim, dtype=np.float32)  # fallback
+            return np.zeros(self.embedding_dim, dtype=np.float32)
 
-        return emb
-
-    def encode(self, texts, batch_size=4, normalize=True, max_retries=3):
-
+    def encode(self, texts, batch_size=8, normalize=True, max_retries=3):
+        """获取文本或实体的向量嵌入"""
         if isinstance(texts, str):
             texts = [texts]
 
@@ -84,166 +81,132 @@ class HuggingFaceEmbeddingAPI:
                         "inputs": batch,
                         "options": {"wait_for_model": True}
                     }
-
                     response = requests.post(
                         self.api_url,
                         headers=self.headers,
                         json=payload,
                         timeout=120
                     )
-                    status = response.status_code
 
-                    # 成功
-                    if status == 200:
+                    if response.status_code == 200:
                         result = response.json()
-
                         if isinstance(result, list):
-                            # result: [token_emb_list_for_text1, text2...]
                             for item in result:
                                 if isinstance(item, list):
-                                    pooled = self._mean_pooling(item)
-                                    all_embeddings.append(pooled)
+                                    emb = self._mean_pooling(item)
+                                    all_embeddings.append(emb)
                                 else:
-                                    all_embeddings.append(
-                                        np.zeros(self.embedding_dim, dtype=np.float32)
-                                    )
+                                    all_embeddings.append(np.zeros(self.embedding_dim, dtype=np.float32))
                         else:
-                            # error payload
-                            all_embeddings.extend([
-                                np.zeros(self.embedding_dim, dtype=np.float32)
-                            ] * len(batch))
-
+                            all_embeddings.extend([np.zeros(self.embedding_dim)] * len(batch))
+                        break  # 成功跳出重试
+                    elif response.status_code == 410:
+                        logger.error(f"Model {self.model_name} not available (410)")
+                        all_embeddings.extend([np.zeros(self.embedding_dim)] * len(batch))
                         break
-
-                    # 410 - model unavailable
-                    elif status == 410:
-                        logger.error(f"Model {self.model_name} is not available (410).")
-                        all_embeddings.extend([
-                            np.zeros(self.embedding_dim, dtype=np.float32)
-                        ] * len(batch))
-                        break
-
-                    # 模型加载中
-                    elif status == 503:
-                        if retry < max_retries - 1:
-                            time.sleep(8)
-                            continue
-                        else:
-                            all_embeddings.extend([
-                                np.zeros(self.embedding_dim, dtype=np.float32)
-                            ] * len(batch))
-
-                    # 其他错误
+                    elif response.status_code == 503:
+                        logger.warning(f"Model loading... retry {retry+1}/{max_retries}")
+                        time.sleep(10)
                     else:
-                        if retry < max_retries - 1:
-                            time.sleep(3)
-                            continue
-                        else:
-                            all_embeddings.extend([
-                                np.zeros(self.embedding_dim, dtype=np.float32)
-                            ] * len(batch))
-
-                except Exception as e:
-                    logger.error(f"Exception in embedding: {str(e)}")
-                    if retry < max_retries - 1:
+                        logger.error(f"API error {response.status_code}: {response.text}")
                         time.sleep(3)
-                        continue
-                    else:
-                        all_embeddings.extend([
-                            np.zeros(self.embedding_dim, dtype=np.float32)
-                        ] * len(batch))
+                except Exception as e:
+                    logger.error(f"Exception during embedding: {e}")
+                    time.sleep(3)
+                    if retry == max_retries - 1:
+                        all_embeddings.extend([np.zeros(self.embedding_dim)] * len(batch))
 
         embeddings = np.array(all_embeddings, dtype=np.float32)
-
         if normalize:
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             norms[norms == 0] = 1
             embeddings = embeddings / norms
-
+        return embeddings
+# Embedding API
+class HuggingFaceEmbeddingAPI:
+    """BGE embedding via HF InferenceClient"""
+    def __init__(self, model_name="BAAI/bge-m3"):
+        self.model_name = model_name
+    
+    def encode(self, texts, batch_size=8, normalize=True):
+        if isinstance(texts, str):
+            texts = [texts]
+        embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i+batch_size]
+            result = hf_client.sentence_similarity(
+                {
+                    "source_sentence": batch[0] if len(batch)==1 else batch,  # HF 会自动处理单句或多句
+                    "sentences": batch
+                },
+                model=self.model_name
+            )
+            # result 可能是 list of lists 或 dict
+            for item in result:
+                emb = np.array(item, dtype=np.float32)
+                embeddings.append(emb)
+        embeddings = np.vstack(embeddings)
+        if normalize:
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            norms[norms==0] = 1
+            embeddings = embeddings / norms
         return embeddings
 
-
-
+# Reranker API
 class HuggingFaceRerankAPI:
-    """使用 Hugging Face Inference API 进行重排序"""
-    
-    def __init__(self, model_name: str, api_token: str):
+    """BGE reranker via HF InferenceClient"""
+    def __init__(self, model_name="BAAI/bge-reranker-v2-m3"):
         self.model_name = model_name
-        # ✅ 修复：使用正确的 API 端点
-        self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
-        self.headers = {"Authorization": f"Bearer {api_token}"}
     
-    def predict(self, pairs, max_retries=3):
+    def predict(self, pairs):
         """
-        pairs: list of [query, passage] pairs
-        返回分数列表
+        pairs: list of (query, passage)
+        返回每对的分数列表
         """
         scores = []
-        
-        for idx, (query, passage) in enumerate(pairs):
-            for retry in range(max_retries):
-                try:
-                    # ✅ 修复：Reranker 模型的正确调用格式
-                    response = requests.post(
-                        self.api_url,
-                        headers=self.headers,
-                        json={
-                            "inputs": {
-                                "source_sentence": query,
-                                "sentences": [passage]
-                            },
-                            "options": {
-                                "wait_for_model": True,
-                                "use_cache": True
-                            }
-                        },
-                        timeout=60
-                    )
-                    
-                    if response.status_code == 200:
-                        result = response.json()
-                        
-                        # ✅ 处理不同的返回格式
-                        if isinstance(result, list) and len(result) > 0:
-                            # 返回格式: [score1, score2, ...]
-                            score = float(result[0])
-                        elif isinstance(result, dict):
-                            # 返回格式: {"score": 0.xx} 或 {"similarity": 0.xx}
-                            score = result.get('score', result.get('similarity', 0.0))
-                        elif isinstance(result, (int, float)):
-                            score = float(result)
-                        else:
-                            logger.warning(f"Unexpected rerank result format: {type(result)}")
-                            score = 0.0
-                        
-                        scores.append(score)
-                        break
-                    
-                    elif response.status_code == 503:
-                        logger.warning(f"Model loading for rerank (attempt {retry+1}/{max_retries})")
-                        if retry < max_retries - 1:
-                            time.sleep(10)
-                            continue
-                        else:
-                            scores.append(0.0)
-                    
-                    else:
-                        logger.error(f"Rerank API Error {response.status_code}: {response.text}")
-                        if retry == max_retries - 1:
-                            scores.append(0.0)
-                        else:
-                            time.sleep(2)
-                            continue
-                
-                except Exception as e:
-                    logger.error(f"Rerank API Error (pair {idx+1}): {str(e)}")
-                    if retry == max_retries - 1:
-                        scores.append(0.0)
-                    else:
-                        time.sleep(2)
-                        continue
-        
+        for query, passage in pairs:
+            result = hf_client.text_classification(
+                f"{query}\n{passage}",
+                model=self.model_name
+            )
+            # result 可能是 [{"label":..., "score":...}]
+            score = result[0]["score"] if isinstance(result, list) and "score" in result[0] else 0.0
+            scores.append(score)
         return scores
+
+# rerank_paths_with_apis 改写
+def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
+    path_keys = list(path_kv.keys())
+    if not path_keys:
+        st.warning("No path keys to rerank")
+        return {"neo4j_retrieval": []}
+
+    # Step 1: query embedding
+    st.info("🔍 Calculating query embeddings...")
+    query_emb = bi_api.encode(query_text)
+
+    # Step 2: path embeddings
+    st.info(f"📊 Calculating embeddings for {len(path_keys)} paths...")
+    cand_embs = bi_api.encode(path_keys)
+
+    # Step 3: similarity score (cosine)
+    sim_scores = (query_emb @ cand_embs.T).flatten()
+    scored_paths = list(zip(path_keys, sim_scores))
+    scored_paths.sort(key=lambda x: x[1], reverse=True)
+    top100 = scored_paths[:100]
+
+    # Step 4: Cross-encoder rerank
+    st.info("🔄 Running reranker...")
+    pairs = [(query_text, pk) for pk, _ in top100]
+    cross_scores = cross_api.predict(pairs)
+    rerank_final = list(zip([p[0] for p in top100], cross_scores))
+    rerank_final.sort(key=lambda x: x[1], reverse=True)
+
+    top30 = rerank_final[:30]
+    top30_values = [path_kv[pk] for pk, _ in top30]
+
+    st.success(f"✅ Top {len(top30_values)} paths returned")
+    return {"neo4j_retrieval": top30_values}
 
 
 @st.cache_resource(show_spinner="Loading data resources...")
@@ -287,25 +250,19 @@ def load_all_resources():
         # --- 初始化模型 API（不下载模型）---
         st.info("🌐 Initializing model API connection...")
         
-        #As SapBERT do not support inference API, we change the encoding model in this demo to sentence-transformers/all-MiniLM-L6-v2)
-        sap_api = HuggingFaceEmbeddingAPI(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
+        # SapBERT API
+        sap_api = HuggingFaceSapBERTEmbeddingAPI(
+            model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
             api_token=HF_TOKEN
         )
         st.success("✅ SapBERT API initialized")
         
         # BGE-M3 API
-        bi_api = HuggingFaceEmbeddingAPI(
-            model_name="BAAI/bge-m3",
-            api_token=HF_TOKEN
-        )
+        bi_api = HuggingFaceEmbeddingAPI(model_name="BAAI/bge-m3")
         st.success("✅ BGE-M3 API initialized")
         
         # BGE Reranker API
-        cross_api = HuggingFaceRerankAPI(
-            model_name="BAAI/bge-reranker-v2-m3",
-            api_token=HF_TOKEN
-        )
+        cross_api = HuggingFaceRerankAPI(model_name="BAAI/bge-reranker-v2-m3")
         st.success("✅ BGE Reranker API initialized")
         
         st.success("🎉All resources are loaded!")
@@ -439,103 +396,38 @@ def embed_entity(text: str, api):
         return np.zeros(768, dtype='float32')
         
 def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
-    """
-    使用 API 进行路径重排序
-    
-    Args:
-        query_text: 查询文本
-        path_kv: 路径键值对字典
-        bi_api: BGE-M3 API 实例
-        cross_api: BGE Reranker API 实例
-    
-    Returns:
-        dict: {"neo4j_retrieval": top30_values}
-    """
-    try:
-        # --- 1. 使用 BGE-M3 API 获取 query embedding ---
-        st.info("🔍Calculating the query vector...")
-        query_emb = bi_api.encode([query_text], normalize=True)  # shape: (1, dim)
-        
-        # --- 2. 获取所有候选路径的 embeddings ---
-        path_keys = list(path_kv.keys())
-        
-        if not path_keys:
-            logger.warning("No path keys to rerank")
-            return {"neo4j_retrieval": []}
-        
-        st.info(f"📊 Processing {len(path_keys)} path candidates...")
-        
-        # 分批处理候选路径（API 调用）
-        batch_size = 32
-        all_cand_embs = []
-        
-        for i in range(0, len(path_keys), batch_size):
-            batch = path_keys[i:i + batch_size]
-            st.text(f"⏳ Processing batch {i//batch_size + 1}/{(len(path_keys)-1)//batch_size + 1}...")
-            
-            # 调用 API 获取 embeddings
-            batch_embs = bi_api.encode(batch, normalize=True)
-            all_cand_embs.append(batch_embs)
-        
-        # 合并所有批次的 embeddings
-        cand_embs = np.vstack(all_cand_embs)  # shape: (num_candidates, dim)
-        
-        # --- 3. 计算相似度分数 ---
-        st.info("💯 Calculating the similarity score...")
-        
-        # 矩阵乘法计算余弦相似度
-        sim_scores = np.matmul(query_emb, cand_embs.T).squeeze().tolist()
-        
-        # 如果只有一个候选，确保 sim_scores 是列表
-        if isinstance(sim_scores, float):
-            sim_scores = [sim_scores]
-        
-        # 按相似度排序
-        scored_paths = list(zip(path_keys, sim_scores))
-        scored_paths.sort(key=lambda x: x[1], reverse=True)
-        
-        # 取 top 100
-        top100 = scored_paths[:100]
-        logger.info(f"Top 100 paths selected from {len(path_keys)} candidates")
-        
-        # --- 4. 使用 Cross-encoder 重排序 ---
-        st.info("🔄 Reranker fine sorting is being used...")
-        
-        # 构造 query-passage 对
-        pairs = [(query_text, pk) for pk, _ in top100]
-        
-        # 分批调用 rerank API
-        cross_batch_size = 16
-        all_cross_scores = []
-        
-        for i in range(0, len(pairs), cross_batch_size):
-            batch_pairs = pairs[i:i + cross_batch_size]
-            st.text(f"⏳ Rerank batch {i//cross_batch_size + 1}/{(len(pairs)-1)//cross_batch_size + 1}...")
-            
-            # 调用 rerank API
-            batch_scores = cross_api.predict(batch_pairs)
-            all_cross_scores.extend(batch_scores)
-        
-        # --- 5. 最终排序并返回 top 30 ---
-        rerank_final = list(zip([p[0] for p in top100], all_cross_scores))
-        rerank_final.sort(key=lambda x: x[1], reverse=True)
-        
-        top30 = rerank_final[:30]
-        top30_values = [path_kv[pk] for pk, _ in top30]
-        
-        logger.info(f"Cross-encoder reranked top 30 paths")
-        st.success(f"✅ Done! Returns top {len(top30_values)}")
-        
-        return {"neo4j_retrieval": top30_values}
-    
-    except Exception as e:
-        logger.error(f"Error in rerank_paths_with_apis: {str(e)}")
-        st.error(f"❌ Reranking failed: {str(e)}")
-        
-        # 降级方案：直接返回前30个
-        path_keys = list(path_kv.keys())
-        fallback_values = [path_kv[k] for k in path_keys[:30]]
-        return {"neo4j_retrieval": fallback_values}
+    path_keys = list(path_kv.keys())
+    if not path_keys:
+        st.warning("No path keys to rerank")
+        return {"neo4j_retrieval": []}
+
+    # Step 1: query embedding
+    st.info("🔍 Calculating query embeddings...")
+    query_emb = bi_api.encode(query_text)
+
+    # Step 2: path embeddings
+    st.info(f"📊 Calculating embeddings for {len(path_keys)} paths...")
+    cand_embs = bi_api.encode(path_keys)
+
+    # Step 3: similarity score (cosine)
+    sim_scores = (query_emb @ cand_embs.T).flatten()
+    scored_paths = list(zip(path_keys, sim_scores))
+    scored_paths.sort(key=lambda x: x[1], reverse=True)
+    top100 = scored_paths[:100]
+
+    # Step 4: Cross-encoder rerank
+    st.info("🔄 Running reranker...")
+    pairs = [(query_text, pk) for pk, _ in top100]
+    cross_scores = cross_api.predict(pairs)
+    rerank_final = list(zip([p[0] for p in top100], cross_scores))
+    rerank_final.sort(key=lambda x: x[1], reverse=True)
+
+    top30 = rerank_final[:30]
+    top30_values = [path_kv[pk] for pk, _ in top30]
+
+    st.success(f"✅ Top {len(top30_values)} paths returned")
+    return {"neo4j_retrieval": top30_values}
+
 
 def search_pubmed(pubmed_query: str, max_results: int = 3) -> str:
     try:
