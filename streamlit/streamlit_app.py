@@ -201,7 +201,7 @@ def load_all_resources():
         
         # SapBERT API
         sap_api = HuggingFaceSapBERTEmbeddingAPI(
-            model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext", HF_TOKEN)
+            model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext", api_token=HF_TOKEN)
         st.success("✅ SapBERT API initialized")
         
         # BGE-M3 API
