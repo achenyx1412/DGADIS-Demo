@@ -41,7 +41,7 @@ MAX_TOKENS = 128000
 
 # ======================== 加载数据资源 ========================
 class HuggingFaceEmbeddingAPI:
-    """使用 Hugging Face Inference API 获取 embeddings（修复版：自动 pooling）"""
+
 
     def __init__(self, model_name: str, api_token: str):
         self.model_name = model_name
@@ -50,25 +50,25 @@ class HuggingFaceEmbeddingAPI:
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json"
         }
+        self.embedding_dim = 1024   # ★ BGE-large 的维度
 
     def _mean_pooling(self, token_embeddings):
-        """对 HF 返回的 token embeddings 做 mean pooling"""
+        """对 token embeddings 做 mean pooling"""
+
         arr = np.array(token_embeddings, dtype=np.float32)
 
-        # Case: arr shape = (seq_len, 768)
-        if arr.ndim == 2:
+        if arr.ndim == 2:                # (seq_len, 1024)
             emb = arr.mean(axis=0)
-        # Case: arr shape = (1, seq_len, 768)
-        elif arr.ndim == 3:
+
+        elif arr.ndim == 3:              # (1, seq_len, 1024)
             emb = arr.mean(axis=1).squeeze(0)
+
         else:
-            # fallback
-            emb = np.zeros(768, dtype=np.float32)
+            emb = np.zeros(self.embedding_dim, dtype=np.float32)  # fallback
 
         return emb
 
     def encode(self, texts, batch_size=4, normalize=True, max_retries=3):
-        """获取文本的 sentence embeddings（自动 pooling）"""
 
         if isinstance(texts, str):
             texts = [texts]
@@ -82,77 +82,86 @@ class HuggingFaceEmbeddingAPI:
                 try:
                     payload = {
                         "inputs": batch,
-                        "options": {
-                            "wait_for_model": True
-                        }
+                        "options": {"wait_for_model": True}
                     }
 
                     response = requests.post(
                         self.api_url,
                         headers=self.headers,
                         json=payload,
-                        timeout=120,
+                        timeout=120
                     )
+                    status = response.status_code
 
                     # 成功
-                    if response.status_code == 200:
+                    if status == 200:
                         result = response.json()
 
-                        # result 是每条文本对应一个 token embedding list
                         if isinstance(result, list):
-
+                            # result: [token_emb_list_for_text1, text2...]
                             for item in result:
                                 if isinstance(item, list):
-                                    # mean pooling
                                     pooled = self._mean_pooling(item)
                                     all_embeddings.append(pooled)
                                 else:
-                                    # 兜底
-                                    all_embeddings.append(np.zeros(768, dtype=np.float32))
-
+                                    all_embeddings.append(
+                                        np.zeros(self.embedding_dim, dtype=np.float32)
+                                    )
                         else:
-                            all_embeddings.extend([np.zeros(768, dtype=np.float32)] * len(batch))
+                            # error payload
+                            all_embeddings.extend([
+                                np.zeros(self.embedding_dim, dtype=np.float32)
+                            ] * len(batch))
 
                         break
 
-                    # 模型不可用（SapBERT 不常出现）
-                    elif response.status_code == 410:
-                        logger.error(f"Model {self.model_name} is not available (410)")
-                        all_embeddings.extend([np.zeros(768)] * len(batch))
+                    # 410 - model unavailable
+                    elif status == 410:
+                        logger.error(f"Model {self.model_name} is not available (410).")
+                        all_embeddings.extend([
+                            np.zeros(self.embedding_dim, dtype=np.float32)
+                        ] * len(batch))
                         break
 
                     # 模型加载中
-                    elif response.status_code == 503:
+                    elif status == 503:
                         if retry < max_retries - 1:
-                            time.sleep(10)
+                            time.sleep(8)
                             continue
                         else:
-                            all_embeddings.extend([np.zeros(768)] * len(batch))
+                            all_embeddings.extend([
+                                np.zeros(self.embedding_dim, dtype=np.float32)
+                            ] * len(batch))
 
+                    # 其他错误
                     else:
                         if retry < max_retries - 1:
                             time.sleep(3)
                             continue
                         else:
-                            all_embeddings.extend([np.zeros(768)] * len(batch))
+                            all_embeddings.extend([
+                                np.zeros(self.embedding_dim, dtype=np.float32)
+                            ] * len(batch))
 
                 except Exception as e:
-                    logger.error(f"Exception: {str(e)}")
+                    logger.error(f"Exception in embedding: {str(e)}")
                     if retry < max_retries - 1:
                         time.sleep(3)
                         continue
                     else:
-                        all_embeddings.extend([np.zeros(768)] * len(batch))
+                        all_embeddings.extend([
+                            np.zeros(self.embedding_dim, dtype=np.float32)
+                        ] * len(batch))
 
         embeddings = np.array(all_embeddings, dtype=np.float32)
 
-        # L2 normalize
         if normalize:
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             norms[norms == 0] = 1
             embeddings = embeddings / norms
 
         return embeddings
+
 
 
 class HuggingFaceRerankAPI:
@@ -278,9 +287,9 @@ def load_all_resources():
         # --- 初始化模型 API（不下载模型）---
         st.info("🌐 Initializing model API connection...")
         
-        #SapBERT API
+        #As SapBERT do not support inference API, we change the encoding model in this demo to bge-large-en-v1.5)
         sap_api = HuggingFaceEmbeddingAPI(
-            model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
+            model_name="BAAI/bge-large-en-v1.5",
             api_token=HF_TOKEN
         )
         st.success("✅ SapBERT API initialized")
