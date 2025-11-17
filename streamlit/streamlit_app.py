@@ -285,9 +285,9 @@ def load_all_resources():
         # --- 初始化模型 API（不下载模型）---
         st.info("🌐 Initializing model API connection...")
         
-        # SapBERT API
+        #(SapBERT-from-PubMedBERT-fulltext do not support HuggingFace Inference API, change it to all-MiniLM-L6-v2)
         sap_api = HuggingFaceEmbeddingAPI(
-            model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
             api_token=HF_TOKEN
         )
         st.success("✅ SapBERT API initialized")
@@ -1049,7 +1049,8 @@ def user_input(state: dict, user_reply_text = None):
         "ai_message": ai_message.content,
         "need_user_reply": False,
         "messages": [HumanMessage(content=user_reply_text)],
-        "user_reply": user_reply_text
+        "user_reply": user_reply_text,
+        "user_reply_text": None
     }
 
 
@@ -1350,7 +1351,7 @@ def build_graphrag_agent(resources):
     builder = StateGraph(MyState)
 
     builder.add_node("parse_query", parse_query)
-    builder.add_node("user_input", user_input)
+    builder.add_node("user_input", lambda state: user_input(state, state.get("user_reply_text")))
     builder.add_node("neo4j_retrieval", lambda state: neo4j_retrieval(state, resources))
     builder.add_node("decide_router", decide_router)
     builder.add_node("api_search", api_search)
