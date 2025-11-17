@@ -45,13 +45,33 @@ MAX_TOKENS = 128000
 # SapBERT Embedding API
 # -----------------------------
 class HuggingFaceSapBERTEmbeddingAPI:
-    def __init__(self, model_name: str, api_token: str, embedding_dim: int = 768):
+    """
+    使用 Hugging Face Inference API 获取 SapBERT token embedding 并做 mean pooling。
+    适用于实体或短文本向量化。
+    """
+
+    def __init__(self, model_name: str = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
+                 api_token: str = None,
+                 embedding_dim: int = 768):
+        """
+        Args:
+            model_name: HF 模型名
+            api_token: HF API Token，如果未提供会从环境变量 HF_TOKEN 获取
+            embedding_dim: embedding 维度
+        """
         self.model_name = model_name
+        self.api_token = api_token or os.environ.get("HF_TOKEN")
+        if not self.api_token:
+            raise ValueError("HF_TOKEN not provided or not found in environment variables")
         self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
-        self.headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
+        self.headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json"
+        }
         self.embedding_dim = embedding_dim
 
     def _mean_pooling(self, token_embeddings):
+        """对 token embeddings 做 mean pooling"""
         arr = np.array(token_embeddings, dtype=np.float32)
         if arr.ndim == 2:
             return arr.mean(axis=0)
@@ -60,7 +80,19 @@ class HuggingFaceSapBERTEmbeddingAPI:
         else:
             return np.zeros(self.embedding_dim, dtype=np.float32)
 
-    def encode(self, texts, batch_size=4, normalize=True, max_retries=3):
+    def encode(self, texts, normalize=True, batch_size=8, max_retries=3):
+        """
+        获取文本或实体向量嵌入
+
+        Args:
+            texts: str 或 list[str]
+            normalize: 是否做向量归一化
+            batch_size: 批处理大小
+            max_retries: 请求重试次数
+
+        Returns:
+            np.ndarray, shape = (len(texts), embedding_dim)
+        """
         if isinstance(texts, str):
             texts = [texts]
 
@@ -72,20 +104,28 @@ class HuggingFaceSapBERTEmbeddingAPI:
             for retry in range(max_retries):
                 try:
                     payload = {"inputs": batch, "options": {"wait_for_model": True}}
-                    response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=120)
+                    response = requests.post(
+                        self.api_url,
+                        headers=self.headers,
+                        json=payload,
+                        timeout=120
+                    )
 
                     if response.status_code == 200:
                         result = response.json()
-                        for item in result:
-                            if isinstance(item, list):
-                                emb = self._mean_pooling(item)
-                                all_embeddings.append(emb)
-                            else:
-                                all_embeddings.append(np.zeros(self.embedding_dim, dtype=np.float32))
-                        break
+                        if isinstance(result, list):
+                            for item in result:
+                                if isinstance(item, list):
+                                    emb = self._mean_pooling(item)
+                                    all_embeddings.append(emb)
+                                else:
+                                    all_embeddings.append(np.zeros(self.embedding_dim, dtype=np.float32))
+                        else:
+                            all_embeddings.extend([np.zeros(self.embedding_dim, dtype=np.float32)] * len(batch))
+                        break  # 成功跳出重试
                     elif response.status_code == 410:
                         logger.error(f"Model {self.model_name} not available (410)")
-                        all_embeddings.extend([np.zeros(self.embedding_dim)] * len(batch))
+                        all_embeddings.extend([np.zeros(self.embedding_dim, dtype=np.float32)] * len(batch))
                         break
                     elif response.status_code == 503:
                         logger.warning(f"Model loading... retry {retry+1}/{max_retries}")
@@ -97,13 +137,15 @@ class HuggingFaceSapBERTEmbeddingAPI:
                     logger.error(f"Exception during embedding: {e}")
                     time.sleep(3)
                     if retry == max_retries - 1:
-                        all_embeddings.extend([np.zeros(self.embedding_dim)] * len(batch))
+                        all_embeddings.extend([np.zeros(self.embedding_dim, dtype=np.float32)] * len(batch))
 
         embeddings = np.array(all_embeddings, dtype=np.float32)
+
         if normalize:
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             norms[norms == 0] = 1
             embeddings = embeddings / norms
+
         return embeddings
 
 # -----------------------------
@@ -200,8 +242,7 @@ def load_all_resources():
         st.info("🌐 Initializing model API connection...")
         
         # SapBERT API
-        sap_api = HuggingFaceSapBERTEmbeddingAPI(
-            model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext", api_token=HF_TOKEN)
+        sap_api = HuggingFaceSapBERTEmbeddingAPI()
         st.success("✅ SapBERT API initialized")
         
         # BGE-M3 API
@@ -954,7 +995,7 @@ def neo4j_retrieval(state: MyState, resources):
     path_kv: Dict[str, str] = {}
     for entity in entity_list:
         try:
-            entity_embedding2 = embed_entity(parsed_query, sap_api).astype('float32').reshape(1, -1)
+            entity_embedding2 = sap_api.encode(parsed_query)
             D, I = idx3.search(entity_embedding2, 5)
             candidate_triples = []
             for idx in I[0]:
@@ -975,7 +1016,7 @@ def neo4j_retrieval(state: MyState, resources):
             "tail_desc": cand.get("tail_desc", "")}
             for cand in candidate_triples]
             
-            entity_embedding = embed_entity(entity, sap_api).astype('float32').reshape(1, -1)
+            entity_embedding = sap_api.encode(entity, sap_api)
             candidates1 = []
             try:
                 D1, I1 = idx1.search(entity_embedding, topk)
