@@ -5,7 +5,7 @@ from typing import List, Tuple, Annotated, TypedDict, Dict, Any, Optional, Liter
 from datasets import load_dataset
 import pickle
 import faiss
-
+import time
 import pandas as pd
 import networkx as nx
 import tiktoken
@@ -16,7 +16,7 @@ import requests
 import numpy as np
 import streamlit as st
 from huggingface_hub import hf_hub_download
-# LangChain imports
+
 from langchain_core.messages import AIMessage, HumanMessage, AnyMessage
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
@@ -45,10 +45,10 @@ class HuggingFaceEmbeddingAPI:
     
     def __init__(self, model_name: str, api_token: str):
         self.model_name = model_name
-        self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
+        self.api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
         self.headers = {"Authorization": f"Bearer {api_token}"}
     
-    def encode(self, texts, batch_size=8, normalize=True):
+    def encode(self, texts, batch_size=8, normalize=True, max_retries=3):
         """
         模拟 sentence-transformers 的 encode 方法
         返回 numpy array
@@ -62,45 +62,85 @@ class HuggingFaceEmbeddingAPI:
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             
-            try:
-                response = requests.post(
-                    self.api_url,
-                    headers=self.headers,
-                    json={
-                        "inputs": batch,
-                        "options": {"wait_for_model": True}
-                    },
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    embeddings = response.json()
+            for retry in range(max_retries):
+                try:
+                    # ✅ 修复：正确的 API 调用格式
+                    response = requests.post(
+                        self.api_url,
+                        headers=self.headers,
+                        json={
+                            "inputs": batch,
+                            "options": {
+                                "wait_for_model": True,
+                                "use_cache": True
+                            }
+                        },
+                        timeout=60  # 增加超时时间
+                    )
                     
-                    # 处理不同的返回格式
-                    if isinstance(embeddings, list) and len(embeddings) > 0:
-                        if isinstance(embeddings[0], list):
-                            # 直接是 embedding 列表
-                            batch_embeddings = embeddings
-                        elif isinstance(embeddings[0], dict) and 'embedding' in embeddings[0]:
-                            # 包含在 dict 中
-                            batch_embeddings = [e['embedding'] for e in embeddings]
+                    # 调试信息
+                    logger.info(f"API Response Status: {response.status_code}")
+                    
+                    if response.status_code == 200:
+                        embeddings = response.json()
+                        
+                        # ✅ 处理返回格式
+                        # HF Feature Extraction API 通常返回: [[emb1], [emb2], ...]
+                        if isinstance(embeddings, list):
+                            # 确保是二维数组
+                            if len(embeddings) > 0 and isinstance(embeddings[0], list):
+                                all_embeddings.extend(embeddings)
+                            else:
+                                logger.error(f"Unexpected embedding format: {type(embeddings[0])}")
+                                all_embeddings.extend([[0.0] * 768] * len(batch))
                         else:
-                            batch_embeddings = embeddings
+                            logger.error(f"Unexpected response format: {type(embeddings)}")
+                            all_embeddings.extend([[0.0] * 768] * len(batch))
+                        
+                        break  # 成功，跳出重试循环
+                    
+                    elif response.status_code == 503:
+                        # 模型正在加载
+                        logger.warning(f"Model loading, waiting... (attempt {retry+1}/{max_retries})")
+                        st.info(f"⏳ 模型正在加载，请稍候... (尝试 {retry+1}/{max_retries})")
+                        time.sleep(10)  # 等待10秒
+                        continue
+                    
                     else:
-                        batch_embeddings = embeddings
-                    
-                    all_embeddings.extend(batch_embeddings)
-                else:
-                    st.warning(f"API 调用失败 (batch {i//batch_size + 1}): {response.status_code}")
-                    # 返回零向量作为后备
-                    all_embeddings.extend([[0.0] * 768] * len(batch))
-                    
-            except Exception as e:
-                st.warning(f"API 调用异常 (batch {i//batch_size + 1}): {str(e)}")
-                # 返回零向量作为后备
-                all_embeddings.extend([[0.0] * 768] * len(batch))
+                        error_msg = response.text
+                        logger.error(f"API Error {response.status_code}: {error_msg}")
+                        st.warning(f"API 调用失败 (状态码 {response.status_code})")
+                        
+                        if retry == max_retries - 1:
+                            # 最后一次重试也失败，返回零向量
+                            all_embeddings.extend([[0.0] * 768] * len(batch))
+                        else:
+                            time.sleep(2)  # 等待后重试
+                            continue
+                        
+                except requests.exceptions.Timeout:
+                    logger.error(f"Request timeout (attempt {retry+1}/{max_retries})")
+                    if retry == max_retries - 1:
+                        st.warning(f"API 请求超时")
+                        all_embeddings.extend([[0.0] * 768] * len(batch))
+                    else:
+                        time.sleep(2)
+                        continue
+                
+                except Exception as e:
+                    logger.error(f"API 调用异常: {str(e)}")
+                    if retry == max_retries - 1:
+                        st.warning(f"API 调用异常: {str(e)}")
+                        all_embeddings.extend([[0.0] * 768] * len(batch))
+                    else:
+                        time.sleep(2)
+                        continue
         
         # 转换为 numpy array
+        if not all_embeddings:
+            logger.error("No embeddings collected")
+            return np.zeros((len(texts), 768), dtype=np.float32)
+        
         embeddings_array = np.array(all_embeddings, dtype=np.float32)
         
         # 归一化（如果需要）
@@ -117,47 +157,79 @@ class HuggingFaceRerankAPI:
     
     def __init__(self, model_name: str, api_token: str):
         self.model_name = model_name
+        # ✅ 修复：使用正确的 API 端点
         self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
         self.headers = {"Authorization": f"Bearer {api_token}"}
     
-    def predict(self, pairs):
+    def predict(self, pairs, max_retries=3):
         """
         pairs: list of [query, passage] pairs
         返回分数列表
         """
         scores = []
         
-        for query, passage in pairs:
-            try:
-                response = requests.post(
-                    self.api_url,
-                    headers=self.headers,
-                    json={
-                        "inputs": {
-                            "source_sentence": query,
-                            "sentences": [passage]
+        for idx, (query, passage) in enumerate(pairs):
+            for retry in range(max_retries):
+                try:
+                    # ✅ 修复：Reranker 模型的正确调用格式
+                    response = requests.post(
+                        self.api_url,
+                        headers=self.headers,
+                        json={
+                            "inputs": {
+                                "source_sentence": query,
+                                "sentences": [passage]
+                            },
+                            "options": {
+                                "wait_for_model": True,
+                                "use_cache": True
+                            }
                         },
-                        "options": {"wait_for_model": True}
-                    },
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    # 不同模型返回格式可能不同
-                    if isinstance(result, list):
-                        score = result[0] if result else 0.0
-                    elif isinstance(result, dict):
-                        score = result.get('score', result.get('similarity', 0.0))
-                    else:
-                        score = 0.0
-                    scores.append(score)
-                else:
-                    scores.append(0.0)
+                        timeout=60
+                    )
                     
-            except Exception as e:
-                st.warning(f"Rerank API 调用异常: {str(e)}")
-                scores.append(0.0)
+                    if response.status_code == 200:
+                        result = response.json()
+                        
+                        # ✅ 处理不同的返回格式
+                        if isinstance(result, list) and len(result) > 0:
+                            # 返回格式: [score1, score2, ...]
+                            score = float(result[0])
+                        elif isinstance(result, dict):
+                            # 返回格式: {"score": 0.xx} 或 {"similarity": 0.xx}
+                            score = result.get('score', result.get('similarity', 0.0))
+                        elif isinstance(result, (int, float)):
+                            score = float(result)
+                        else:
+                            logger.warning(f"Unexpected rerank result format: {type(result)}")
+                            score = 0.0
+                        
+                        scores.append(score)
+                        break
+                    
+                    elif response.status_code == 503:
+                        logger.warning(f"Model loading for rerank (attempt {retry+1}/{max_retries})")
+                        if retry < max_retries - 1:
+                            time.sleep(10)
+                            continue
+                        else:
+                            scores.append(0.0)
+                    
+                    else:
+                        logger.error(f"Rerank API Error {response.status_code}: {response.text}")
+                        if retry == max_retries - 1:
+                            scores.append(0.0)
+                        else:
+                            time.sleep(2)
+                            continue
+                
+                except Exception as e:
+                    logger.error(f"Rerank API 调用异常 (pair {idx+1}): {str(e)}")
+                    if retry == max_retries - 1:
+                        scores.append(0.0)
+                    else:
+                        time.sleep(2)
+                        continue
         
         return scores
 
@@ -206,21 +278,24 @@ def load_all_resources():
         # SapBERT API
         sap_api = HuggingFaceEmbeddingAPI(
             model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
-            api_token=HF_TOKEN
+            api_token=HF_TOKEN,
+            debug=True
         )
         st.success("✅ SapBERT API initialized")
         
         # BGE-M3 API
         bi_api = HuggingFaceEmbeddingAPI(
             model_name="BAAI/bge-m3",
-            api_token=HF_TOKEN
+            api_token=HF_TOKEN,
+            debug=True
         )
         st.success("✅ BGE-M3 API initialized")
         
         # BGE Reranker API
         cross_api = HuggingFaceRerankAPI(
             model_name="BAAI/bge-reranker-v2-m3",
-            api_token=HF_TOKEN
+            api_token=HF_TOKEN,
+            debug=True
         )
         st.success("✅ BGE Reranker API initialized")
         
