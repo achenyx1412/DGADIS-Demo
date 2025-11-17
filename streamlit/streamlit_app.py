@@ -35,14 +35,30 @@ logger = logging.getLogger(__name__)
 DS_API_KEY = st.secrets.get("DS_API_KEY")
 HF_TOKEN = st.secrets.get("HF_TOKEN")
 try:
-    hf_client = InferenceClient(
+    # 用于特征提取的客户端
+    feature_client = InferenceClient(
         provider="hf-inference",
-        api_key=HF_TOKEN,
+        api_key=os.environ["HF_TOKEN"],
     )
-    logger.info("HuggingFace InferenceClient initialized successfully")
+    
+    # 用于句子相似度的客户端  
+    similarity_client = InferenceClient(
+        provider="hf-inference",
+        api_key=os.environ["HF_TOKEN"],
+    )
+    
+    # 用于重排序的客户端
+    rerank_client = InferenceClient(
+        provider="auto",
+        api_key=os.environ["HF_TOKEN"],
+    )
+    
+    logger.info("HuggingFace InferenceClients initialized successfully")
 except Exception as e:
     logger.error(f"HuggingFace client initialization ERROR: {e}")
-    hf_client = None
+    feature_client = None
+    similarity_client = None
+    rerank_client = None
 ENTREZ_EMAIL = st.secrets.get("ENTREZ_EMAIL")
 
 Entrez.email = ENTREZ_EMAIL
@@ -195,126 +211,32 @@ def _extract_json_from_text(text: str) -> Dict[str, Any]:
             return {}
     return {}
 def embed_entity(entity_text: str):
-    """使用API进行实体嵌入"""
-    if not hf_client:
-        raise ValueError("HuggingFace client not initialized")
+    """使用API进行实体嵌入 - 严格按照示例"""
+    if not feature_client:
+        raise ValueError("Feature extraction client not initialized")
     
     try:
-        # 调用feature_extraction API
-        result = hf_client.feature_extraction(
+        # 严格按照示例代码格式
+        result = feature_client.feature_extraction(
             entity_text,
             model="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
         )
         
-        # 处理返回结果
-        if isinstance(result, list):
-            result = np.array(result)
-        
-        # 确保是二维数组
-        if len(result.shape) == 1:
-            result = result.reshape(1, -1)
-        
-        # 取平均得到句子嵌入
-        embedding = np.mean(result, axis=1)
-        
-        # 确保返回正确形状
+        # 处理返回的嵌入向量
+        if hasattr(result, 'shape'):
+            embedding = result
+        else:
+            # 如果是其他格式，转换为numpy数组
+            embedding = np.array(result)
+            
+        # 确保是一维向量
         if len(embedding.shape) > 1:
-            embedding = embedding.squeeze()
+            embedding = np.mean(embedding, axis=0)
             
         return embedding
     except Exception as e:
-        logger.error(f"Embedding API call failed for '{entity_text}': {e}")
+        logger.error(f"Embedding API call failed: {e}")
         raise
-def calculate_similarity_batch(query, sentences, model_name="BAAI/bge-m3"):
-    """批量计算相似度"""
-    if not hf_client:
-        raise ValueError("HuggingFace client not initialized")
-    
-    try:
-        # 获取查询嵌入
-        query_embedding = hf_client.feature_extraction(
-            query,
-            model=model_name,
-        )
-        
-        # 处理查询嵌入
-        if isinstance(query_embedding, list):
-            query_embedding = np.array(query_embedding)
-        if len(query_embedding.shape) > 1:
-            query_embedding = np.mean(query_embedding, axis=1)
-        query_embedding = query_embedding.squeeze()
-        
-        # 批量处理句子嵌入
-        batch_size = 16
-        similarities = []
-        
-        for i in range(0, len(sentences), batch_size):
-            batch_sentences = sentences[i:i+batch_size]
-            
-            batch_embeddings = hf_client.feature_extraction(
-                batch_sentences,
-                model=model_name,
-            )
-            
-            # 处理批次嵌入
-            if isinstance(batch_embeddings, list):
-                batch_embeddings = np.array(batch_embeddings)
-            
-            # 计算每个句子的相似度
-            for j in range(len(batch_sentences)):
-                sent_embedding = batch_embeddings[j]
-                if len(sent_embedding.shape) > 1:
-                    sent_embedding = np.mean(sent_embedding, axis=1)
-                sent_embedding = sent_embedding.squeeze()
-                
-                # 计算余弦相似度
-                similarity = np.dot(query_embedding, sent_embedding) / (
-                    np.linalg.norm(query_embedding) * np.linalg.norm(sent_embedding) + 1e-8
-                )
-                similarities.append(float(similarity))
-        
-        return similarities
-    except Exception as e:
-        logger.error(f"Similarity calculation failed: {e}")
-        # 返回默认相似度
-        return [0.5] * len(sentences)
-
-def rerank_pairs(query, pairs, model_name="BAAI/bge-reranker-v2-m3"):
-    """重排序文本对"""
-    if not hf_client:
-        raise ValueError("HuggingFace client not initialized")
-    
-    try:
-        # 准备输入
-        inputs = [f"{query} [SEP] {text}" for text in pairs]
-        
-        batch_size = 8
-        scores = []
-        
-        for i in range(0, len(inputs), batch_size):
-            batch_inputs = inputs[i:i+batch_size]
-            
-            batch_results = hf_client.text_classification(
-                batch_inputs,
-                model=model_name,
-            )
-            
-            # 处理结果
-            for result in batch_results:
-                if hasattr(result, 'score'):
-                    scores.append(result.score)
-                elif isinstance(result, list) and len(result) > 0:
-                    scores.append(result[0]['score'])
-                elif isinstance(result, dict) and 'score' in result:
-                    scores.append(result['score'])
-                else:
-                    # 无法解析分数，使用默认值
-                    scores.append(0.5)
-        
-        return scores
-    except Exception as e:
-        logger.error(f"Reranking failed: {e}")
-        return [0.5] * len(pairs)
 def search_pubmed(pubmed_query: str, max_results: int = 3) -> str:
     try:
         handle = Entrez.esearch(db="pubmed", term=pubmed_query, retmax=max_results)
@@ -879,12 +801,7 @@ def neo4j_retrieval(state: MyState, resources):
     path_kv: Dict[str, str] = {}
     for entity in entity_list:
         try:
-            entity_embedding2 = embed_entity(parsed_query)
-            logger.info(f"Entity embedding shape: {entity_embedding2.shape}")
-            
-            # 确保嵌入是正确形状
-            if len(entity_embedding2.shape) == 1:
-                entity_embedding2 = entity_embedding2.reshape(1, -1)
+            entity_embedding2 = embed_entity(parsed_query).reshape(1, -1)
             D, I = idx3.search(entity_embedding2, 5)
             candidate_triples = []
             for idx in I[0]:
@@ -905,9 +822,7 @@ def neo4j_retrieval(state: MyState, resources):
             "tail_desc": cand.get("tail_desc", "")}
             for cand in candidate_triples]
             
-            entity_embedding = embed_entity(entity)
-            if len(entity_embedding.shape) == 1:
-                entity_embedding = entity_embedding.reshape(1, -1)
+            entity_embedding = embed_entity(entity).reshape(1, -1)
             candidates1 = []
             try:
                 D1, I1 = idx1.search(entity_embedding, topk)
