@@ -41,122 +41,126 @@ MAX_TOKENS = 128000
 
 # ======================== 加载数据资源 ========================
 class HuggingFaceEmbeddingAPI:
-    """使用 Hugging Face Inference API 获取 embeddings"""
+    """使用 Hugging Face Inference API 获取 embeddings（修复版）"""
     
     def __init__(self, model_name: str, api_token: str):
         self.model_name = model_name
-        self.api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
-        self.headers = {"Authorization": f"Bearer {api_token}"}
-        self.debug = debug
+        # ✅ 使用正确的端点格式
+        self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
+        self.headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        }
     
-    def encode(self, texts, batch_size=8, normalize=True, max_retries=3):
-        """
-        模拟 sentence-transformers 的 encode 方法
-        返回 numpy array
-        """
+    def encode(self, texts, batch_size=4, normalize=True, max_retries=3):
+        """获取文本的 embeddings"""
         if isinstance(texts, str):
             texts = [texts]
-        if self.debug:
-            st.write(f"🔍 调试信息:")
-            st.write(f"- Model: {self.model_name}")
-            st.write(f"- API URL: {self.api_url}")
-            st.write(f"- Texts count: {len(texts)}")
-            st.write(f"- Sample text: {texts[0][:100]}...")
+        
         all_embeddings = []
         
-        # 批处理
+        # 减小批次大小以避免超时
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             
             for retry in range(max_retries):
                 try:
-                    # ✅ 修复：正确的 API 调用格式
+                    # ✅ 简化的 payload 格式
+                    payload = {
+                        "inputs": batch,
+                        "options": {
+                            "wait_for_model": True
+                        }
+                    }
+                    
+                    logger.info(f"Calling API: {self.api_url}")
+                    logger.info(f"Payload: {payload}")
+                    
                     response = requests.post(
                         self.api_url,
                         headers=self.headers,
-                        json={
-                            "inputs": batch,
-                            "options": {
-                                "wait_for_model": True,
-                                "use_cache": True
-                            }
-                        },
-                        timeout=60  # 增加超时时间
+                        json=payload,
+                        timeout=120
                     )
                     
-                    # 调试信息
-                    logger.info(f"API Response Status: {response.status_code}")
+                    logger.info(f"Response status: {response.status_code}")
                     
                     if response.status_code == 200:
-                        embeddings = response.json()
+                        result = response.json()
+                        logger.info(f"Response type: {type(result)}")
                         
-                        # ✅ 处理返回格式
-                        # HF Feature Extraction API 通常返回: [[emb1], [emb2], ...]
-                        if isinstance(embeddings, list):
-                            # 确保是二维数组
-                            if len(embeddings) > 0 and isinstance(embeddings[0], list):
-                                all_embeddings.extend(embeddings)
+                        # HF API 可能返回多种格式
+                        if isinstance(result, list):
+                            # 检查是否是嵌套列表
+                            if len(result) > 0:
+                                if isinstance(result[0], list) and isinstance(result[0][0], (int, float)):
+                                    # [[emb1], [emb2], ...] 格式
+                                    all_embeddings.extend(result)
+                                elif isinstance(result[0], (int, float)):
+                                    # 单个 embedding: [0.1, 0.2, ...]
+                                    all_embeddings.append(result)
+                                else:
+                                    logger.error(f"Unexpected format: {type(result[0])}")
+                                    all_embeddings.extend([[0.0] * 768] * len(batch))
                             else:
-                                logger.error(f"Unexpected embedding format: {type(embeddings[0])}")
                                 all_embeddings.extend([[0.0] * 768] * len(batch))
                         else:
-                            logger.error(f"Unexpected response format: {type(embeddings)}")
+                            logger.error(f"Unexpected result type: {type(result)}")
                             all_embeddings.extend([[0.0] * 768] * len(batch))
                         
-                        break  # 成功，跳出重试循环
+                        break  # 成功
+                    
+                    elif response.status_code == 410:
+                        # 410 = Gone - 模型不可用
+                        logger.error(f"Model {self.model_name} is not available (410)")
+                        st.error(f"❌ 模型 {self.model_name} 不可用")
+                        st.info("💡 建议：该模型可能不支持 Inference API，将使用备用方案")
+                        # 返回零向量
+                        all_embeddings.extend([[0.0] * 768] * len(batch))
+                        break
                     
                     elif response.status_code == 503:
-                        # 模型正在加载
-                        logger.warning(f"Model loading, waiting... (attempt {retry+1}/{max_retries})")
-                        st.info(f"⏳ 模型正在加载，请稍候... (尝试 {retry+1}/{max_retries})")
-                        time.sleep(10)  # 等待10秒
-                        continue
+                        logger.warning(f"Model loading... (attempt {retry+1})")
+                        st.info(f"⏳ 模型加载中... ({retry+1}/{max_retries})")
+                        if retry < max_retries - 1:
+                            import time
+                            time.sleep(15)
+                            continue
+                        else:
+                            all_embeddings.extend([[0.0] * 768] * len(batch))
                     
                     else:
-                        error_msg = response.text
-                        logger.error(f"API Error {response.status_code}: {error_msg}")
-                        st.warning(f"API 调用失败 (状态码 {response.status_code})")
+                        error_text = response.text
+                        logger.error(f"API Error {response.status_code}: {error_text}")
+                        st.warning(f"API 错误 {response.status_code}: {error_text[:200]}")
                         
-                        if retry == max_retries - 1:
-                            # 最后一次重试也失败，返回零向量
-                            all_embeddings.extend([[0.0] * 768] * len(batch))
-                        else:
-                            time.sleep(2)  # 等待后重试
+                        if retry < max_retries - 1:
+                            import time
+                            time.sleep(3)
                             continue
-                        
-                except requests.exceptions.Timeout:
-                    logger.error(f"Request timeout (attempt {retry+1}/{max_retries})")
-                    if retry == max_retries - 1:
-                        st.warning(f"API 请求超时")
-                        all_embeddings.extend([[0.0] * 768] * len(batch))
-                    else:
-                        time.sleep(2)
-                        continue
+                        else:
+                            all_embeddings.extend([[0.0] * 768] * len(batch))
                 
                 except Exception as e:
-                    logger.error(f"API 调用异常: {str(e)}")
-                    if retry == max_retries - 1:
-                        st.warning(f"API 调用异常: {str(e)}")
-                        all_embeddings.extend([[0.0] * 768] * len(batch))
-                    else:
-                        time.sleep(2)
+                    logger.error(f"Exception: {str(e)}")
+                    if retry < max_retries - 1:
+                        import time
+                        time.sleep(3)
                         continue
+                    else:
+                        all_embeddings.extend([[0.0] * 768] * len(batch))
         
-        # 转换为 numpy array
         if not all_embeddings:
-            logger.error("No embeddings collected")
             return np.zeros((len(texts), 768), dtype=np.float32)
         
         embeddings_array = np.array(all_embeddings, dtype=np.float32)
         
-        # 归一化（如果需要）
-        if normalize:
+        if normalize and embeddings_array.shape[0] > 0:
             norms = np.linalg.norm(embeddings_array, axis=1, keepdims=True)
-            norms[norms == 0] = 1  # 避免除以零
+            norms[norms == 0] = 1
             embeddings_array = embeddings_array / norms
         
         return embeddings_array
-
 
 class HuggingFaceRerankAPI:
     """使用 Hugging Face Inference API 进行重排序"""
@@ -284,24 +288,21 @@ def load_all_resources():
         # SapBERT API
         sap_api = HuggingFaceEmbeddingAPI(
             model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
-            api_token=HF_TOKEN,
-            debug=True
+            api_token=HF_TOKEN
         )
         st.success("✅ SapBERT API initialized")
         
         # BGE-M3 API
         bi_api = HuggingFaceEmbeddingAPI(
             model_name="BAAI/bge-m3",
-            api_token=HF_TOKEN,
-            debug=True
+            api_token=HF_TOKEN
         )
         st.success("✅ BGE-M3 API initialized")
         
         # BGE Reranker API
         cross_api = HuggingFaceRerankAPI(
             model_name="BAAI/bge-reranker-v2-m3",
-            api_token=HF_TOKEN,
-            debug=True
+            api_token=HF_TOKEN
         )
         st.success("✅ BGE Reranker API initialized")
         
