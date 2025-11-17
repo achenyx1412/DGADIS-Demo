@@ -162,12 +162,12 @@ class HuggingFaceRerankAPI:
         return scores
 
 
-@st.cache_resource(show_spinner="正在加载数据资源...")
+@st.cache_resource(show_spinner="Loading data resources...")
 def load_all_resources():
     try:
         # --- 1. 检查 TOKEN ---
         if not HF_TOKEN:
-            st.error("❌ 未找到 HF_TOKEN，请在 Streamlit Secrets 中配置")
+            st.error("❌ HF_TOKEN not found, please configure in Streamlit Secrets")
             st.stop()
         
         os.makedirs("data", exist_ok=True)
@@ -184,7 +184,7 @@ def load_all_resources():
             "cengyongming.csv"
         ]
         
-        st.info("📦 正在下载数据文件...")
+        st.info("📦Downloading data files...")
         
         for filename in files_to_download:
             downloaded_path = hf_hub_download(
@@ -198,33 +198,33 @@ def load_all_resources():
             import shutil
             shutil.copy(downloaded_path, f"data/{filename}")
         
-        st.success("✅ 所有文件下载完成")
+        st.success("✅ All files downloaded.")
 
         # --- 初始化模型 API（不下载模型）---
-        st.info("🌐 正在初始化模型 API 连接...")
+        st.info("🌐 Initializing model API connection...")
         
         # SapBERT API
         sap_api = HuggingFaceEmbeddingAPI(
             model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
             api_token=HF_TOKEN
         )
-        st.success("✅ SapBERT API 初始化完成")
+        st.success("✅ SapBERT API initialized")
         
         # BGE-M3 API
         bi_api = HuggingFaceEmbeddingAPI(
             model_name="BAAI/bge-m3",
             api_token=HF_TOKEN
         )
-        st.success("✅ BGE-M3 API 初始化完成")
+        st.success("✅ BGE-M3 API initialized")
         
         # BGE Reranker API
         cross_api = HuggingFaceRerankAPI(
             model_name="BAAI/bge-reranker-v2-m3",
             api_token=HF_TOKEN
         )
-        st.success("✅ BGE Reranker API 初始化完成")
+        st.success("✅ BGE Reranker API initialized")
         
-        st.success("🎉 所有资源加载完成！（使用 API 模式，内存占用极低）")
+        st.success("🎉All resources are loaded!")
         
         return {
             "sap": (None, sap_api),
@@ -233,8 +233,8 @@ def load_all_resources():
         }
         
     except Exception as e:
-        st.error(f"❌ 加载资源时出错: {str(e)}")
-        with st.expander("🔍 完整错误信息"):
+        st.error(f"❌ Error loading resource: {str(e)}")
+        with st.expander("🔍 Full error message"):
             import traceback
             st.code(traceback.format_exc())
         st.stop()
@@ -369,7 +369,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
     """
     try:
         # --- 1. 使用 BGE-M3 API 获取 query embedding ---
-        st.info("🔍 正在计算查询向量...")
+        st.info("🔍Calculating the query vector...")
         query_emb = bi_api.encode([query_text], normalize=True)  # shape: (1, dim)
         
         # --- 2. 获取所有候选路径的 embeddings ---
@@ -379,7 +379,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
             logger.warning("No path keys to rerank")
             return {"neo4j_retrieval": []}
         
-        st.info(f"📊 正在处理 {len(path_keys)} 个候选路径...")
+        st.info(f"📊 Processing {len(path_keys)} path candidates...")
         
         # 分批处理候选路径（API 调用）
         batch_size = 32
@@ -387,7 +387,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
         
         for i in range(0, len(path_keys), batch_size):
             batch = path_keys[i:i + batch_size]
-            st.text(f"⏳ 处理批次 {i//batch_size + 1}/{(len(path_keys)-1)//batch_size + 1}...")
+            st.text(f"⏳ Processing batch {i//batch_size + 1}/{(len(path_keys)-1)//batch_size + 1}...")
             
             # 调用 API 获取 embeddings
             batch_embs = bi_api.encode(batch, normalize=True)
@@ -397,7 +397,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
         cand_embs = np.vstack(all_cand_embs)  # shape: (num_candidates, dim)
         
         # --- 3. 计算相似度分数 ---
-        st.info("💯 正在计算相似度分数...")
+        st.info("💯 Calculating the similarity score...")
         
         # 矩阵乘法计算余弦相似度
         sim_scores = np.matmul(query_emb, cand_embs.T).squeeze().tolist()
@@ -415,7 +415,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
         logger.info(f"Top 100 paths selected from {len(path_keys)} candidates")
         
         # --- 4. 使用 Cross-encoder 重排序 ---
-        st.info("🔄 正在使用 Reranker 精细排序...")
+        st.info("🔄 Reranker fine sorting is being used...")
         
         # 构造 query-passage 对
         pairs = [(query_text, pk) for pk, _ in top100]
@@ -426,7 +426,7 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
         
         for i in range(0, len(pairs), cross_batch_size):
             batch_pairs = pairs[i:i + cross_batch_size]
-            st.text(f"⏳ Rerank 批次 {i//cross_batch_size + 1}/{(len(pairs)-1)//cross_batch_size + 1}...")
+            st.text(f"⏳ Rerank batch {i//cross_batch_size + 1}/{(len(pairs)-1)//cross_batch_size + 1}...")
             
             # 调用 rerank API
             batch_scores = cross_api.predict(batch_pairs)
@@ -440,13 +440,13 @@ def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
         top30_values = [path_kv[pk] for pk, _ in top30]
         
         logger.info(f"Cross-encoder reranked top 30 paths")
-        st.success(f"✅ 完成！返回 top {len(top30_values)} 个结果")
+        st.success(f"✅ Done! Returns top {len(top30_values)}")
         
         return {"neo4j_retrieval": top30_values}
     
     except Exception as e:
         logger.error(f"Error in rerank_paths_with_apis: {str(e)}")
-        st.error(f"❌ 重排序失败: {str(e)}")
+        st.error(f"❌ Reranking failed: {str(e)}")
         
         # 降级方案：直接返回前30个
         path_keys = list(path_kv.keys())
@@ -978,10 +978,10 @@ def whether_to_interact(state):
     interaction = state.get("sufficient_or_insufficient")
     print(f"interaction:{interaction}")
     if interaction == "insufficient":
-        print("决策: 信息不足，需要用户输入。")
+        print("Decision: Insufficient information, user input required.")
         return "user_input"
     elif interaction == "sufficient":
-        print("决策: 信息充分，进入Neo4j检索。")
+        print("Decision: Information is sufficient to enter kg retrieval.")
         return "neo4j_retrieval"
     else:
         return "stop_flow"
