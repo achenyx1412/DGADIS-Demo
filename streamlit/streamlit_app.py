@@ -285,9 +285,9 @@ def load_all_resources():
         # --- 初始化模型 API（不下载模型）---
         st.info("🌐 Initializing model API connection...")
         
-        #(SapBERT-from-PubMedBERT-fulltext do not support HuggingFace Inference API, change it to all-MiniLM-L6-v2)
+        #(SapBERT-from-PubMedBERT-fulltext do not support HuggingFace Inference API, change it to pritamdeka/SapBERT-from-PubMedBERT-fulltext)
         sap_api = HuggingFaceEmbeddingAPI(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_name="pritamdeka/SapBERT-from-PubMedBERT-fulltext",
             api_token=HF_TOKEN
         )
         st.success("✅ SapBERT API initialized")
