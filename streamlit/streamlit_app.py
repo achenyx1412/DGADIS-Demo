@@ -287,9 +287,9 @@ def load_all_resources():
         # --- 初始化模型 API（不下载模型）---
         st.info("🌐 Initializing model API connection...")
         
-        #As SapBERT do not support inference API, we change the encoding model in this demo to bge-large-en-v1.5)
+        #As SapBERT do not support inference API, we change the encoding model in this demo to BAAI/bge-base-en-v1.5)
         sap_api = HuggingFaceEmbeddingAPI(
-            model_name="BAAI/bge-large-en-v1.5",
+            model_name="BAAI/bge-base-en-v1.5",
             api_token=HF_TOKEN
         )
         st.success("✅ SapBERT API initialized")
