@@ -40,165 +40,6 @@ ENTREZ_EMAIL = st.secrets.get("ENTREZ_EMAIL")
 Entrez.email = ENTREZ_EMAIL
 MAX_TOKENS = 128000
 
-# ======================== 加载数据资源 ========================
-# -----------------------------
-# SapBERT Embedding API
-# -----------------------------
-class HuggingFaceSapBERTEmbeddingAPI:
-    """
-    使用 Hugging Face Inference API 获取 SapBERT token embedding 并做 mean pooling。
-    适用于实体或短文本向量化。
-    """
-
-    def __init__(self, model_name: str = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
-                 api_token: str = None,
-                 embedding_dim: int = 768):
-        """
-        Args:
-            model_name: HF 模型名
-            api_token: HF API Token，如果未提供会从环境变量 HF_TOKEN 获取
-            embedding_dim: embedding 维度
-        """
-        self.model_name = model_name
-        self.api_token = api_token or os.environ.get("HF_TOKEN")
-        if not self.api_token:
-            raise ValueError("HF_TOKEN not provided or not found in environment variables")
-        self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
-        self.headers = {
-            "Authorization": f"Bearer {self.api_token}",
-            "Content-Type": "application/json"
-        }
-        self.embedding_dim = embedding_dim
-
-    def _mean_pooling(self, token_embeddings):
-        """对 token embeddings 做 mean pooling"""
-        arr = np.array(token_embeddings, dtype=np.float32)
-        if arr.ndim == 2:
-            return arr.mean(axis=0)
-        elif arr.ndim == 3:
-            return arr.mean(axis=1).squeeze(0)
-        else:
-            return np.zeros(self.embedding_dim, dtype=np.float32)
-
-    def encode(self, texts, normalize=True, batch_size=8, max_retries=3):
-        """
-        获取文本或实体向量嵌入
-
-        Args:
-            texts: str 或 list[str]
-            normalize: 是否做向量归一化
-            batch_size: 批处理大小
-            max_retries: 请求重试次数
-
-        Returns:
-            np.ndarray, shape = (len(texts), embedding_dim)
-        """
-        if isinstance(texts, str):
-            texts = [texts]
-
-        all_embeddings = []
-
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-
-            for retry in range(max_retries):
-                try:
-                    payload = {"inputs": batch, "options": {"wait_for_model": True}}
-                    response = requests.post(
-                        self.api_url,
-                        headers=self.headers,
-                        json=payload,
-                        timeout=120
-                    )
-
-                    if response.status_code == 200:
-                        result = response.json()
-                        if isinstance(result, list):
-                            for item in result:
-                                if isinstance(item, list):
-                                    emb = self._mean_pooling(item)
-                                    all_embeddings.append(emb)
-                                else:
-                                    all_embeddings.append(np.zeros(self.embedding_dim, dtype=np.float32))
-                        else:
-                            all_embeddings.extend([np.zeros(self.embedding_dim, dtype=np.float32)] * len(batch))
-                        break  # 成功跳出重试
-                    elif response.status_code == 410:
-                        logger.error(f"Model {self.model_name} not available (410)")
-                        all_embeddings.extend([np.zeros(self.embedding_dim, dtype=np.float32)] * len(batch))
-                        break
-                    elif response.status_code == 503:
-                        logger.warning(f"Model loading... retry {retry+1}/{max_retries}")
-                        time.sleep(10)
-                    else:
-                        logger.error(f"API error {response.status_code}: {response.text}")
-                        time.sleep(3)
-                except Exception as e:
-                    logger.error(f"Exception during embedding: {e}")
-                    time.sleep(3)
-                    if retry == max_retries - 1:
-                        all_embeddings.extend([np.zeros(self.embedding_dim, dtype=np.float32)] * len(batch))
-
-        embeddings = np.array(all_embeddings, dtype=np.float32)
-
-        if normalize:
-            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-            norms[norms == 0] = 1
-            embeddings = embeddings / norms
-
-        return embeddings
-
-# -----------------------------
-# BGE-M3 Bi-Encoder
-# -----------------------------
-class HuggingFaceEmbeddingAPI:
-    def __init__(self, model_name="BAAI/bge-m3", normalize=True):
-        self.model_name = model_name
-        self.normalize = normalize
-
-    def encode(self, texts, batch_size=8):
-        if isinstance(texts, str):
-            texts = [texts]
-        all_embeddings = []
-
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i+batch_size]
-            for j, query in enumerate(batch):
-                other_sentences = batch
-                result = hf_client.sentence_similarity(
-                    source_sentence=query,
-                    other_sentences=other_sentences,
-                    model=self.model_name
-                )
-                emb = np.array(result, dtype=np.float32)
-                all_embeddings.append(emb)
-
-        embeddings = np.vstack(all_embeddings)
-        if self.normalize:
-            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-            norms[norms == 0] = 1
-            embeddings = embeddings / norms
-        return embeddings
-
-# -----------------------------
-# BGE-Reranker Cross-Encoder
-# -----------------------------
-class HuggingFaceRerankAPI:
-    def __init__(self, model_name="BAAI/bge-reranker-v2-m3"):
-        self.model_name = model_name
-
-    def predict(self, pairs):
-        scores = []
-        for query, passage in pairs:
-            result = hf_client.sentence_similarity(
-                source_sentence=query,
-                other_sentences=[passage],
-                model=self.model_name
-            )
-            score = float(result[0]) if isinstance(result, (list, tuple)) else 0.0
-            scores.append(score)
-        return scores
-
 
 @st.cache_resource(show_spinner="Loading data resources...")
 def load_all_resources():
@@ -237,29 +78,6 @@ def load_all_resources():
             shutil.copy(downloaded_path, f"data/{filename}")
         
         st.success("✅ All files downloaded.")
-
-        # --- 初始化模型 API（不下载模型）---
-        st.info("🌐 Initializing model API connection...")
-        
-        # SapBERT API
-        sap_api = HuggingFaceSapBERTEmbeddingAPI()
-        st.success("✅ SapBERT API initialized")
-        
-        # BGE-M3 API
-        bi_api = HuggingFaceEmbeddingAPI(model_name="BAAI/bge-m3")
-        st.success("✅ BGE-M3 API initialized")
-        
-        # BGE Reranker API
-        cross_api = HuggingFaceRerankAPI(model_name="BAAI/bge-reranker-v2-m3")
-        st.success("✅ BGE Reranker API initialized")
-        
-        st.success("🎉All resources are loaded!")
-        
-        return {
-            "sap": (None, sap_api),
-            "bi": (None, bi_api),
-            "cross": (None, cross_api)
-        }
         
     except Exception as e:
         st.error(f"❌ Error loading resource: {str(e)}")
@@ -368,62 +186,23 @@ def _extract_json_from_text(text: str) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
-# -----------------------------
-# SapBERT embedding helper
-# -----------------------------
-def embed_entity(text: str, sap_api):
+def embed_entity(entity_text: str):
+    """使用API进行实体嵌入"""
+    if not sapbert_client:
+        raise ValueError("SAPBERT client not initialized")
+    
     try:
-        emb = sap_api.encode([text], normalize=True)
-        if isinstance(emb, np.ndarray) and len(emb.shape) == 2:
-            return emb[0].astype('float32')
-        raise RuntimeError("Unexpected embedding format")
+        # 调用feature_extraction API
+        result = hf_client.feature_extraction(
+            entity_text,
+            model="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
+        )
+        # API返回的是numpy数组，取平均得到句子嵌入
+        embedding = result.mean(axis=1).squeeze()
+        return embedding
     except Exception as e:
-        logger.error(f"SapBERT embedding error: {e}")
-        return np.zeros(sap_api.embedding_dim, dtype='float32')
-
-# -----------------------------
-# Rerank paths with BGE
-# -----------------------------
-def rerank_paths_with_apis(query_text: str, path_kv: Dict[str, str], bi_api, cross_api,
-                           topk_faiss=100, topk_final=30):
-    if not path_kv:
-        st.warning("No path keys to rerank")
-        return {"neo4j_retrieval": []}
-
-    path_keys = list(path_kv.keys())
-    st.info(f"Calculating query embedding for: {query_text}")
-    query_emb = bi_api.encode([query_text]).reshape(1, -1)
-
-    st.info(f"Calculating embeddings for {len(path_keys)} candidate paths")
-    cand_embs = bi_api.encode(path_keys)
-
-    # Faiss top-k search
-    dim = cand_embs.shape[1]
-    index = faiss.IndexFlatIP(dim)
-    index.add(cand_embs)
-    D, I = index.search(query_emb, min(topk_faiss, len(path_keys)))
-    candidate_paths = [path_keys[i] for i in I[0]]
-    st.info(f"Top {len(candidate_paths)} candidates selected by Faiss")
-
-    # Cross-encoder rerank
-    st.info("Running cross-encoder rerank...")
-    pairs = [(query_text, path) for path in candidate_paths]
-    cross_batch_size = 16
-    cross_scores = []
-    for i in range(0, len(pairs), cross_batch_size):
-        batch_pairs = pairs[i:i+cross_batch_size]
-        batch_scores = cross_api.predict(batch_pairs)
-        cross_scores.extend(batch_scores)
-        st.text(f"Processed batch {i//cross_batch_size + 1}/{(len(pairs)-1)//cross_batch_size + 1}")
-
-    rerank_final = list(zip(candidate_paths, cross_scores))
-    rerank_final.sort(key=lambda x: x[1], reverse=True)
-
-    top_final = rerank_final[:topk_final]
-    top_final_values = [path_kv[p] for p, _ in top_final]
-
-    st.success(f"✅ Returned top {len(top_final_values)} paths")
-    return {"neo4j_retrieval": top_final_values}
+        logger.error(f"Embedding API call failed: {e}")
+        raise
 
 
 
@@ -974,10 +753,6 @@ def neo4j_retrieval(state: MyState, resources):
         meta3 = pickle.load(f)
     with open("data/kg.gpickle", "rb") as f:
         G = pickle.load(f)
-
-    _, sap_api = resources["sap"]
-    _, bi_api = resources["bi"]
-    _, cross_api = resources["cross"]
     logger.info("---NODE: neo4j_retrieval---")
     #user_query = [message.content for message in state["messages"] if hasattr(message, 'content')]
     #query_str = user_query[0]
@@ -995,7 +770,7 @@ def neo4j_retrieval(state: MyState, resources):
     path_kv: Dict[str, str] = {}
     for entity in entity_list:
         try:
-            entity_embedding2 = sap_api.encode(parsed_query)
+            entity_embedding2 = embed_entity(parsed_query).reshape(1, -1)
             D, I = idx3.search(entity_embedding2, 5)
             candidate_triples = []
             for idx in I[0]:
@@ -1016,7 +791,7 @@ def neo4j_retrieval(state: MyState, resources):
             "tail_desc": cand.get("tail_desc", "")}
             for cand in candidate_triples]
             
-            entity_embedding = sap_api.encode(entity, sap_api)
+            entity_embedding = embed_entity(entity).reshape(1, -1)
             candidates1 = []
             try:
                 D1, I1 = idx1.search(entity_embedding, topk)
@@ -1122,14 +897,71 @@ def neo4j_retrieval(state: MyState, resources):
         except Exception as e:
             logger.warning(f"'{entity}'failed in faiss {e}")
             continue
+    try:
+        # 使用API进行句子相似度计算（替代双编码器）
+        if not bi_client:
+            raise ValueError("bi_model client not initialized")
+            
+        path_keys = list(path_kv.keys())
+        
+        # 使用sentence_similarity API计算相似度
+        similarity_result = bi_client.sentence_similarity(
+            {
+                "source_sentence": query_text,
+                "sentences": path_keys
+            },
+            model="BAAI/bge-m3",
+        )
+        
+        sim_scores = similarity_result  # API直接返回相似度分数列表
+        scored_paths = list(zip(path_keys, sim_scores))
+        scored_paths.sort(key=lambda x: x[1], reverse=True)
 
-    result = rerank_paths_with_apis(
-        query_text=query_text,
-        path_kv=path_kv,
-        bi_api=bi_api,
-        cross_api=cross_api
-    )
-    return result
+        top100 = scored_paths[:100]
+        
+        # 使用API进行重排序（替代交叉编码器）
+        if not cross_client:
+            raise ValueError("cross_model client not initialized")
+            
+        # 准备重排序的文本对
+        rerank_pairs = [
+            f"{query_text} [SEP] {path_key}" 
+            for path_key, _ in top100
+        ]
+        
+        # 批量进行文本分类（重排序）
+        all_cross_scores = []
+        cross_batch_size = 16
+        
+        for i in range(0, len(rerank_pairs), cross_batch_size):
+            batch_pairs = rerank_pairs[i:i + cross_batch_size]
+            try:
+                # 调用text_classification API进行重排序
+                batch_results = cross_client.text_classification(
+                    batch_pairs,
+                    model="BAAI/bge-reranker-v2-m3",
+                )
+                # 提取分数（假设返回的是相关度分数）
+                batch_scores = [result.score if hasattr(result, 'score') else result[0]['score'] 
+                              for result in batch_results]
+                all_cross_scores.extend(batch_scores)
+            except Exception as e:
+                logger.warning(f"Batch reranking error: {e}")
+                # 如果失败，给这个批次默认分数
+                all_cross_scores.extend([0.5] * len(batch_pairs))
+
+        rerank_final = list(zip([p[0] for p in top100], all_cross_scores))
+        rerank_final.sort(key=lambda x: x[1], reverse=True)
+        top30 = rerank_final[:30]
+
+        top30_values = [path_kv[pk] for pk, _ in top30]
+        logger.info(f"Cross-encoder reranked 30 path: {top30_values[:3]}")
+        return {"neo4j_retrieval": top30_values}
+
+    except Exception as e:
+        logger.warning(f"rerank error: {e}")
+        fallback_values = list(path_kv.values())[:50]
+        return {"neo4j_retrieval": fallback_values}
 
 def decide_router(state: MyState) -> dict:
     print("---EDGE: decide_router---")
