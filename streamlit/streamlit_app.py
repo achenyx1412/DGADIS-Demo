@@ -47,6 +47,7 @@ class HuggingFaceEmbeddingAPI:
         self.model_name = model_name
         self.api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
         self.headers = {"Authorization": f"Bearer {api_token}"}
+        self.debug = debug
     
     def encode(self, texts, batch_size=8, normalize=True, max_retries=3):
         """
@@ -55,7 +56,12 @@ class HuggingFaceEmbeddingAPI:
         """
         if isinstance(texts, str):
             texts = [texts]
-        
+        if self.debug:
+            st.write(f"🔍 调试信息:")
+            st.write(f"- Model: {self.model_name}")
+            st.write(f"- API URL: {self.api_url}")
+            st.write(f"- Texts count: {len(texts)}")
+            st.write(f"- Sample text: {texts[0][:100]}...")
         all_embeddings = []
         
         # 批处理
