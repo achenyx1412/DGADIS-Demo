@@ -188,7 +188,7 @@ def _extract_json_from_text(text: str) -> Dict[str, Any]:
     return {}
 def embed_entity(entity_text: str):
     """使用API进行实体嵌入"""
-    if not sapbert_client:
+    if not hf_client:
         raise ValueError("SAPBERT client not initialized")
     
     try:
@@ -899,13 +899,13 @@ def neo4j_retrieval(state: MyState, resources):
             continue
     try:
         # 使用API进行句子相似度计算（替代双编码器）
-        if not bi_client:
+        if not hf_client:
             raise ValueError("bi_model client not initialized")
             
         path_keys = list(path_kv.keys())
         
         # 使用sentence_similarity API计算相似度
-        similarity_result = bi_client.sentence_similarity(
+        similarity_result = hf_client.sentence_similarity(
             {
                 "source_sentence": query_text,
                 "sentences": path_keys
@@ -920,7 +920,7 @@ def neo4j_retrieval(state: MyState, resources):
         top100 = scored_paths[:100]
         
         # 使用API进行重排序（替代交叉编码器）
-        if not cross_client:
+        if not hf_client:
             raise ValueError("cross_model client not initialized")
             
         # 准备重排序的文本对
@@ -937,7 +937,7 @@ def neo4j_retrieval(state: MyState, resources):
             batch_pairs = rerank_pairs[i:i + cross_batch_size]
             try:
                 # 调用text_classification API进行重排序
-                batch_results = cross_client.text_classification(
+                batch_results = hf_client.text_classification(
                     batch_pairs,
                     model="BAAI/bge-reranker-v2-m3",
                 )
