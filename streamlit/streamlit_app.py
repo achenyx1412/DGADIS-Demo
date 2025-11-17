@@ -41,126 +41,119 @@ MAX_TOKENS = 128000
 
 # ======================== 加载数据资源 ========================
 class HuggingFaceEmbeddingAPI:
-    """使用 Hugging Face Inference API 获取 embeddings（修复版）"""
-    
+    """使用 Hugging Face Inference API 获取 embeddings（修复版：自动 pooling）"""
+
     def __init__(self, model_name: str, api_token: str):
         self.model_name = model_name
-        # ✅ 使用正确的端点格式
         self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
         self.headers = {
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json"
         }
-    
+
+    def _mean_pooling(self, token_embeddings):
+        """对 HF 返回的 token embeddings 做 mean pooling"""
+        arr = np.array(token_embeddings, dtype=np.float32)
+
+        # Case: arr shape = (seq_len, 768)
+        if arr.ndim == 2:
+            emb = arr.mean(axis=0)
+        # Case: arr shape = (1, seq_len, 768)
+        elif arr.ndim == 3:
+            emb = arr.mean(axis=1).squeeze(0)
+        else:
+            # fallback
+            emb = np.zeros(768, dtype=np.float32)
+
+        return emb
+
     def encode(self, texts, batch_size=4, normalize=True, max_retries=3):
-        """获取文本的 embeddings"""
+        """获取文本的 sentence embeddings（自动 pooling）"""
+
         if isinstance(texts, str):
             texts = [texts]
-        
+
         all_embeddings = []
-        
-        # 减小批次大小以避免超时
+
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            
+
             for retry in range(max_retries):
                 try:
-                    # ✅ 简化的 payload 格式
                     payload = {
                         "inputs": batch,
                         "options": {
                             "wait_for_model": True
                         }
                     }
-                    
-                    logger.info(f"Calling API: {self.api_url}")
-                    logger.info(f"Payload: {payload}")
-                    
+
                     response = requests.post(
                         self.api_url,
                         headers=self.headers,
                         json=payload,
-                        timeout=120
+                        timeout=120,
                     )
-                    
-                    logger.info(f"Response status: {response.status_code}")
-                    
+
+                    # 成功
                     if response.status_code == 200:
                         result = response.json()
-                        logger.info(f"Response type: {type(result)}")
-                        
-                        # HF API 可能返回多种格式
+
+                        # result 是每条文本对应一个 token embedding list
                         if isinstance(result, list):
-                            # 检查是否是嵌套列表
-                            if len(result) > 0:
-                                if isinstance(result[0], list) and isinstance(result[0][0], (int, float)):
-                                    # [[emb1], [emb2], ...] 格式
-                                    all_embeddings.extend(result)
-                                elif isinstance(result[0], (int, float)):
-                                    # 单个 embedding: [0.1, 0.2, ...]
-                                    all_embeddings.append(result)
+
+                            for item in result:
+                                if isinstance(item, list):
+                                    # mean pooling
+                                    pooled = self._mean_pooling(item)
+                                    all_embeddings.append(pooled)
                                 else:
-                                    logger.error(f"Unexpected format: {type(result[0])}")
-                                    all_embeddings.extend([[0.0] * 768] * len(batch))
-                            else:
-                                all_embeddings.extend([[0.0] * 768] * len(batch))
+                                    # 兜底
+                                    all_embeddings.append(np.zeros(768, dtype=np.float32))
+
                         else:
-                            logger.error(f"Unexpected result type: {type(result)}")
-                            all_embeddings.extend([[0.0] * 768] * len(batch))
-                        
-                        break  # 成功
-                    
-                    elif response.status_code == 410:
-                        # 410 = Gone - 模型不可用
-                        logger.error(f"Model {self.model_name} is not available (410)")
-                        st.error(f"❌ 模型 {self.model_name} 不可用")
-                        st.info("💡 建议：该模型可能不支持 Inference API，将使用备用方案")
-                        # 返回零向量
-                        all_embeddings.extend([[0.0] * 768] * len(batch))
+                            all_embeddings.extend([np.zeros(768, dtype=np.float32)] * len(batch))
+
                         break
-                    
+
+                    # 模型不可用（SapBERT 不常出现）
+                    elif response.status_code == 410:
+                        logger.error(f"Model {self.model_name} is not available (410)")
+                        all_embeddings.extend([np.zeros(768)] * len(batch))
+                        break
+
+                    # 模型加载中
                     elif response.status_code == 503:
-                        logger.warning(f"Model loading... (attempt {retry+1})")
-                        st.info(f"⏳ 模型加载中... ({retry+1}/{max_retries})")
                         if retry < max_retries - 1:
-                            import time
-                            time.sleep(15)
+                            time.sleep(10)
                             continue
                         else:
-                            all_embeddings.extend([[0.0] * 768] * len(batch))
-                    
+                            all_embeddings.extend([np.zeros(768)] * len(batch))
+
                     else:
-                        error_text = response.text
-                        logger.error(f"API Error {response.status_code}: {error_text}")
-                        st.warning(f"API 错误 {response.status_code}: {error_text[:200]}")
-                        
                         if retry < max_retries - 1:
-                            import time
                             time.sleep(3)
                             continue
                         else:
-                            all_embeddings.extend([[0.0] * 768] * len(batch))
-                
+                            all_embeddings.extend([np.zeros(768)] * len(batch))
+
                 except Exception as e:
                     logger.error(f"Exception: {str(e)}")
                     if retry < max_retries - 1:
-                        import time
                         time.sleep(3)
                         continue
                     else:
-                        all_embeddings.extend([[0.0] * 768] * len(batch))
-        
-        if not all_embeddings:
-            return np.zeros((len(texts), 768), dtype=np.float32)
-        
-        embeddings_array = np.array(all_embeddings, dtype=np.float32)
-        
-        if normalize and embeddings_array.shape[0] > 0:
-            norms = np.linalg.norm(embeddings_array, axis=1, keepdims=True)
+                        all_embeddings.extend([np.zeros(768)] * len(batch))
+
+        embeddings = np.array(all_embeddings, dtype=np.float32)
+
+        # L2 normalize
+        if normalize:
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             norms[norms == 0] = 1
-            embeddings_array = embeddings_array / norms
-        
-        return embeddings_array
+            embeddings = embeddings / norms
+
+        return embeddings
+
 
 class HuggingFaceRerankAPI:
     """使用 Hugging Face Inference API 进行重排序"""
@@ -234,7 +227,7 @@ class HuggingFaceRerankAPI:
                             continue
                 
                 except Exception as e:
-                    logger.error(f"Rerank API 调用异常 (pair {idx+1}): {str(e)}")
+                    logger.error(f"Rerank API Error (pair {idx+1}): {str(e)}")
                     if retry == max_retries - 1:
                         scores.append(0.0)
                     else:
@@ -285,9 +278,9 @@ def load_all_resources():
         # --- 初始化模型 API（不下载模型）---
         st.info("🌐 Initializing model API connection...")
         
-        #(SapBERT-from-PubMedBERT-fulltext do not support HuggingFace Inference API, change it to pritamdeka/SapBERT-from-PubMedBERT-fulltext)
+        #SapBERT API
         sap_api = HuggingFaceEmbeddingAPI(
-            model_name="pritamdeka/SapBERT-from-PubMedBERT-fulltext",
+            model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
             api_token=HF_TOKEN
         )
         st.success("✅ SapBERT API initialized")
@@ -1113,7 +1106,7 @@ def neo4j_retrieval(state: MyState, resources):
                 else:
                     logger.warning(f"Index {idx_int} out of range for meta3 (len={len(meta3)})")
                     
-            logger.info(f"Found {len(candidate_triples)} candidate triples")
+            logger.info(f"Found {len(candidate_triples)} candidate triples:{candidate_triples[:1]}")
             cand_info = [{
             "head": cand.get("head", ""),
             "head_desc": cand.get("head_desc", ""),
@@ -1134,7 +1127,7 @@ def neo4j_retrieval(state: MyState, resources):
                         candidates1.append(meta1[idx_int])
                     else:
                         logger.warning(f"Index {idx_int} out of range for meta1")
-                logger.info(f"idx1 returned {len(candidates1)} candidates")
+                logger.info(f"idx1 returned {len(candidates1)} candidates:{candidates1[:1]}")
             except Exception as e:
                 logger.warning(f"idx1 search failed: {str(e)}")
 
@@ -1147,7 +1140,7 @@ def neo4j_retrieval(state: MyState, resources):
                         candidates2.append(meta2[idx_int])
                     else:
                         logger.warning(f"Index {idx_int} out of range for meta2")
-                logger.info(f"idx2 returned {len(candidates2)} candidates")
+                logger.info(f"idx2 returned {len(candidates2)} candidates:{candidates2[:1]}")
             except Exception as e:
                 logger.warning(f"idx2 search failed: {str(e)}")
                 
