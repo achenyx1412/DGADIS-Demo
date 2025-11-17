@@ -41,22 +41,17 @@ Entrez.email = ENTREZ_EMAIL
 MAX_TOKENS = 128000
 
 # ======================== 加载数据资源 ========================
+# -----------------------------
+# SapBERT Embedding API
+# -----------------------------
 class HuggingFaceSapBERTEmbeddingAPI:
-    """
-    使用 Hugging Face Inference API 获取 SapBERT token embedding 并做 mean pooling
-    适用于实体或短文本向量化
-    """
     def __init__(self, model_name: str, api_token: str, embedding_dim: int = 768):
         self.model_name = model_name
         self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
-        self.headers = {
-            "Authorization": f"Bearer {api_token}",
-            "Content-Type": "application/json"
-        }
+        self.headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
         self.embedding_dim = embedding_dim
 
     def _mean_pooling(self, token_embeddings):
-        """对 token embeddings 做 mean pooling"""
         arr = np.array(token_embeddings, dtype=np.float32)
         if arr.ndim == 2:
             return arr.mean(axis=0)
@@ -65,8 +60,7 @@ class HuggingFaceSapBERTEmbeddingAPI:
         else:
             return np.zeros(self.embedding_dim, dtype=np.float32)
 
-    def encode(self, texts, batch_size=8, normalize=True, max_retries=3):
-        """获取文本或实体的向量嵌入"""
+    def encode(self, texts, batch_size=4, normalize=True, max_retries=3):
         if isinstance(texts, str):
             texts = [texts]
 
@@ -77,29 +71,18 @@ class HuggingFaceSapBERTEmbeddingAPI:
 
             for retry in range(max_retries):
                 try:
-                    payload = {
-                        "inputs": batch,
-                        "options": {"wait_for_model": True}
-                    }
-                    response = requests.post(
-                        self.api_url,
-                        headers=self.headers,
-                        json=payload,
-                        timeout=120
-                    )
+                    payload = {"inputs": batch, "options": {"wait_for_model": True}}
+                    response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=120)
 
                     if response.status_code == 200:
                         result = response.json()
-                        if isinstance(result, list):
-                            for item in result:
-                                if isinstance(item, list):
-                                    emb = self._mean_pooling(item)
-                                    all_embeddings.append(emb)
-                                else:
-                                    all_embeddings.append(np.zeros(self.embedding_dim, dtype=np.float32))
-                        else:
-                            all_embeddings.extend([np.zeros(self.embedding_dim)] * len(batch))
-                        break  # 成功跳出重试
+                        for item in result:
+                            if isinstance(item, list):
+                                emb = self._mean_pooling(item)
+                                all_embeddings.append(emb)
+                            else:
+                                all_embeddings.append(np.zeros(self.embedding_dim, dtype=np.float32))
+                        break
                     elif response.status_code == 410:
                         logger.error(f"Model {self.model_name} not available (410)")
                         all_embeddings.extend([np.zeros(self.embedding_dim)] * len(batch))
@@ -122,91 +105,57 @@ class HuggingFaceSapBERTEmbeddingAPI:
             norms[norms == 0] = 1
             embeddings = embeddings / norms
         return embeddings
-# Embedding API
+
+# -----------------------------
+# BGE-M3 Bi-Encoder
+# -----------------------------
 class HuggingFaceEmbeddingAPI:
-    """BGE embedding via HF InferenceClient"""
-    def __init__(self, model_name="BAAI/bge-m3"):
+    def __init__(self, model_name="BAAI/bge-m3", normalize=True):
         self.model_name = model_name
-    
-    def encode(self, texts, batch_size=8, normalize=True):
+        self.normalize = normalize
+
+    def encode(self, texts, batch_size=8):
         if isinstance(texts, str):
             texts = [texts]
-        embeddings = []
+        all_embeddings = []
+
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i+batch_size]
-            result = hf_client.sentence_similarity(
-                {
-                    "source_sentence": batch[0] if len(batch)==1 else batch,  # HF 会自动处理单句或多句
-                    "sentences": batch
-                },
-                model=self.model_name
-            )
-            # result 可能是 list of lists 或 dict
-            for item in result:
-                emb = np.array(item, dtype=np.float32)
-                embeddings.append(emb)
-        embeddings = np.vstack(embeddings)
-        if normalize:
+            for j, query in enumerate(batch):
+                other_sentences = batch
+                result = hf_client.sentence_similarity(
+                    source_sentence=query,
+                    other_sentences=other_sentences,
+                    model=self.model_name
+                )
+                emb = np.array(result, dtype=np.float32)
+                all_embeddings.append(emb)
+
+        embeddings = np.vstack(all_embeddings)
+        if self.normalize:
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-            norms[norms==0] = 1
+            norms[norms == 0] = 1
             embeddings = embeddings / norms
         return embeddings
 
-# Reranker API
+# -----------------------------
+# BGE-Reranker Cross-Encoder
+# -----------------------------
 class HuggingFaceRerankAPI:
-    """BGE reranker via HF InferenceClient"""
     def __init__(self, model_name="BAAI/bge-reranker-v2-m3"):
         self.model_name = model_name
-    
+
     def predict(self, pairs):
-        """
-        pairs: list of (query, passage)
-        返回每对的分数列表
-        """
         scores = []
         for query, passage in pairs:
-            result = hf_client.text_classification(
-                f"{query}\n{passage}",
+            result = hf_client.sentence_similarity(
+                source_sentence=query,
+                other_sentences=[passage],
                 model=self.model_name
             )
-            # result 可能是 [{"label":..., "score":...}]
-            score = result[0]["score"] if isinstance(result, list) and "score" in result[0] else 0.0
+            score = float(result[0]) if isinstance(result, (list, tuple)) else 0.0
             scores.append(score)
         return scores
-
-# rerank_paths_with_apis 改写
-def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
-    path_keys = list(path_kv.keys())
-    if not path_keys:
-        st.warning("No path keys to rerank")
-        return {"neo4j_retrieval": []}
-
-    # Step 1: query embedding
-    st.info("🔍 Calculating query embeddings...")
-    query_emb = bi_api.encode(query_text)
-
-    # Step 2: path embeddings
-    st.info(f"📊 Calculating embeddings for {len(path_keys)} paths...")
-    cand_embs = bi_api.encode(path_keys)
-
-    # Step 3: similarity score (cosine)
-    sim_scores = (query_emb @ cand_embs.T).flatten()
-    scored_paths = list(zip(path_keys, sim_scores))
-    scored_paths.sort(key=lambda x: x[1], reverse=True)
-    top100 = scored_paths[:100]
-
-    # Step 4: Cross-encoder rerank
-    st.info("🔄 Running reranker...")
-    pairs = [(query_text, pk) for pk, _ in top100]
-    cross_scores = cross_api.predict(pairs)
-    rerank_final = list(zip([p[0] for p in top100], cross_scores))
-    rerank_final.sort(key=lambda x: x[1], reverse=True)
-
-    top30 = rerank_final[:30]
-    top30_values = [path_kv[pk] for pk, _ in top30]
-
-    st.success(f"✅ Top {len(top30_values)} paths returned")
-    return {"neo4j_retrieval": top30_values}
 
 
 @st.cache_resource(show_spinner="Loading data resources...")
@@ -252,9 +201,7 @@ def load_all_resources():
         
         # SapBERT API
         sap_api = HuggingFaceSapBERTEmbeddingAPI(
-            model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
-            api_token=HF_TOKEN
-        )
+            model_name="cambridgeltl/SapBERT-from-PubMedBERT-fulltext", HF_TOKEN)
         st.success("✅ SapBERT API initialized")
         
         # BGE-M3 API
@@ -380,53 +327,63 @@ def _extract_json_from_text(text: str) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
-def embed_entity(text: str, api):
+# -----------------------------
+# SapBERT embedding helper
+# -----------------------------
+def embed_entity(text: str, sap_api):
     try:
-        emb = api.encode([text], normalize=True)
-
-        # emb shape 应该是 (1, dim)
+        emb = sap_api.encode([text], normalize=True)
         if isinstance(emb, np.ndarray) and len(emb.shape) == 2:
             return emb[0].astype('float32')
-
-        # 如果错误格式
-        raise RuntimeError("API returned unexpected embedding format")
-
+        raise RuntimeError("Unexpected embedding format")
     except Exception as e:
-        logger.error(f"embedding error: {e}")
-        return np.zeros(768, dtype='float32')
-        
-def rerank_paths_with_apis(query_text: str, path_kv: dict, bi_api, cross_api):
-    path_keys = list(path_kv.keys())
-    if not path_keys:
+        logger.error(f"SapBERT embedding error: {e}")
+        return np.zeros(sap_api.embedding_dim, dtype='float32')
+
+# -----------------------------
+# Rerank paths with BGE
+# -----------------------------
+def rerank_paths_with_apis(query_text: str, path_kv: Dict[str, str], bi_api, cross_api,
+                           topk_faiss=100, topk_final=30):
+    if not path_kv:
         st.warning("No path keys to rerank")
         return {"neo4j_retrieval": []}
 
-    # Step 1: query embedding
-    st.info("🔍 Calculating query embeddings...")
-    query_emb = bi_api.encode(query_text)
+    path_keys = list(path_kv.keys())
+    st.info(f"Calculating query embedding for: {query_text}")
+    query_emb = bi_api.encode([query_text]).reshape(1, -1)
 
-    # Step 2: path embeddings
-    st.info(f"📊 Calculating embeddings for {len(path_keys)} paths...")
+    st.info(f"Calculating embeddings for {len(path_keys)} candidate paths")
     cand_embs = bi_api.encode(path_keys)
 
-    # Step 3: similarity score (cosine)
-    sim_scores = (query_emb @ cand_embs.T).flatten()
-    scored_paths = list(zip(path_keys, sim_scores))
-    scored_paths.sort(key=lambda x: x[1], reverse=True)
-    top100 = scored_paths[:100]
+    # Faiss top-k search
+    dim = cand_embs.shape[1]
+    index = faiss.IndexFlatIP(dim)
+    index.add(cand_embs)
+    D, I = index.search(query_emb, min(topk_faiss, len(path_keys)))
+    candidate_paths = [path_keys[i] for i in I[0]]
+    st.info(f"Top {len(candidate_paths)} candidates selected by Faiss")
 
-    # Step 4: Cross-encoder rerank
-    st.info("🔄 Running reranker...")
-    pairs = [(query_text, pk) for pk, _ in top100]
-    cross_scores = cross_api.predict(pairs)
-    rerank_final = list(zip([p[0] for p in top100], cross_scores))
+    # Cross-encoder rerank
+    st.info("Running cross-encoder rerank...")
+    pairs = [(query_text, path) for path in candidate_paths]
+    cross_batch_size = 16
+    cross_scores = []
+    for i in range(0, len(pairs), cross_batch_size):
+        batch_pairs = pairs[i:i+cross_batch_size]
+        batch_scores = cross_api.predict(batch_pairs)
+        cross_scores.extend(batch_scores)
+        st.text(f"Processed batch {i//cross_batch_size + 1}/{(len(pairs)-1)//cross_batch_size + 1}")
+
+    rerank_final = list(zip(candidate_paths, cross_scores))
     rerank_final.sort(key=lambda x: x[1], reverse=True)
 
-    top30 = rerank_final[:30]
-    top30_values = [path_kv[pk] for pk, _ in top30]
+    top_final = rerank_final[:topk_final]
+    top_final_values = [path_kv[p] for p, _ in top_final]
 
-    st.success(f"✅ Top {len(top30_values)} paths returned")
-    return {"neo4j_retrieval": top30_values}
+    st.success(f"✅ Returned top {len(top_final_values)} paths")
+    return {"neo4j_retrieval": top_final_values}
+
 
 
 def search_pubmed(pubmed_query: str, max_results: int = 3) -> str:
