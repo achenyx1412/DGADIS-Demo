@@ -752,9 +752,9 @@ def parse_query(state: MyState):
 
 def handle_user_input(state: dict, user_reply_text = None):
     """
-    简化的用户输入处理
+    Streamlit 版本 - 需要交互时完全停止流程
     """
-    print("---NODE: handle_user_input---")
+    print("---NODE: user_input---")
     
     interaction_content = state.get(
         "interaction",
@@ -764,36 +764,41 @@ def handle_user_input(state: dict, user_reply_text = None):
     print(f"Interaction content: {interaction_content}")
     print(f"User reply text: {user_reply_text}")
 
-    # 情况 1：还没有收到用户输入
-    if user_reply_text is None:
-        print("Waiting for user input...")
+    # 情况 1：还没有收到用户输入（流程完全停止，等待前端输入）
+    if not user_reply_text:
+        print("STOPPING FLOW - Waiting for user input...")
+        # 只保留 messages，其他状态都清空或停止
         return {
             "ai_message": interaction_content,
-            "need_user_reply": True
+            "need_user_reply": True,               # 告诉前端：需要用户输入
+            # 不返回 messages，保持原有的对话记录
+            # 其他状态都不返回，让流程停止
         }
 
-    # 情况 2：已经收到用户输入
-    print(f"Received user reply: {user_reply_text}")
+    # 情况 2：已经收到用户输入（流程重新开始）
+    print(f"RESUMING FLOW - Received user reply: {user_reply_text}")
     return {
         "ai_message": interaction_content,
         "need_user_reply": False,
-        "messages": [HumanMessage(content=user_reply_text)]
+        "messages": [HumanMessage(content=user_reply_text)],  # 只添加新的用户消息
+        "user_reply": user_reply_text,
     }
 
 def whether_to_interact(state):
     """判断是否需要与用户交互。"""
     print("---EDGE: whether_to_interact---")
     interaction = state.get("sufficient_or_insufficient")
-    print(f"interaction:{interaction}")
+    print(f"sufficient_or_insufficient: {interaction}")
+    
     if interaction == "insufficient":
-        print("Decision: Insufficient information, user input required.")
+        print("Decision: Insufficient information, STOPPING FLOW for user input.")
         return "user_input"
     elif interaction == "sufficient":
-        print("Decision: Information is sufficient to enter kg retrieval.")
+        print("Decision: Information is sufficient to continue.")
         return "neo4j_retrieval"
     else:
-        return "stop_flow"
-
+        print("Decision: Unknown state, stopping.")
+        return "__end__"
 
 def neo4j_retrieval(state: MyState, resources):
     idx1 = faiss.read_index("data/faiss_node+desc.index")
@@ -1180,27 +1185,37 @@ def build_graphrag_agent(resources):
 
     builder.add_edge(START, "parse_query")
     builder.add_conditional_edges(
-            "parse_query",
-            whether_to_interact,
-            {
-                "user_input": "user_input",
-                "neo4j_retrieval": "neo4j_retrieval"
-            }
-        )
-    builder.add_edge("user_input", "parse_query")
+        "parse_query",
+        whether_to_interact,
+        {
+            "user_input": "user_input",
+            "neo4j_retrieval": "neo4j_retrieval"
+        }
+    )
+    
+    # 关键修改：user_input 后不自动继续，而是等待前端触发
+    # 只有当收到 user_reply_text 时才会继续到 parse_query
+    builder.add_conditional_edges(
+        "user_input",
+        lambda state: "parse_query" if state.get("user_reply_text") else "__end__",  # 没有回复就结束
+        {
+            "parse_query": "parse_query"
+        }
+    )
+    
     builder.add_edge("neo4j_retrieval", "decide_router")
     builder.add_conditional_edges(
-            "decide_router",
-            lambda state: state["route"],
-            {
-                "api_search": "api_search",
-                "llm_answer": "llm_answer"
-            }
-        )
+        "decide_router",
+        lambda state: state["route"],
+        {
+            "api_search": "api_search",
+            "llm_answer": "llm_answer"
+        }
+    )
     builder.add_edge("api_search", "llm_answer")
     builder.add_edge("llm_answer", END)
+    
     return builder.compile()
-
 # 加载资源和构建图
 resources = load_all_resources()
 graph = build_graphrag_agent(resources)
@@ -1213,8 +1228,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "graph_state" not in st.session_state:
     st.session_state.graph_state = None
-if "waiting_for_supplement" not in st.session_state:
-    st.session_state.waiting_for_supplement = False
+if "waiting_for_input" not in st.session_state:
+    st.session_state.waiting_for_input = False
 
 # 显示聊天历史
 for message in st.session_state.messages:
@@ -1223,7 +1238,8 @@ for message in st.session_state.messages:
 
 # 处理用户输入
 if prompt := st.chat_input("What is your dental question?"):
-    # 添加用户消息
+    
+    # 添加用户消息到历史
     st.session_state.messages.append({"role": "user", "content": prompt})
     
     # 显示用户消息
@@ -1232,52 +1248,63 @@ if prompt := st.chat_input("What is your dental question?"):
     
     # 准备输入
     if st.session_state.graph_state is None:
-        # 第一次调用
+        # 第一次调用 - 全新的对话
         inputs = {"messages": [HumanMessage(content=prompt)]}
+        print("=== FIRST CALL ===")
     else:
-        # 后续调用（补充信息）
+        # 后续调用 - 用户提供补充信息
         inputs = dict(st.session_state.graph_state)
-        inputs["user_reply_text"] = prompt
+        inputs["user_reply_text"] = prompt  # 关键：提供用户回复
+        print("=== CONTINUATION CALL with user_reply_text ===")
     
     # 调用图
     try:
         new_state = graph.invoke(inputs)
         st.session_state.graph_state = new_state
         
-        # 调试信息
-        st.sidebar.write("Debug Info:")
-        st.sidebar.write(f"need_user_reply: {new_state.get('need_user_reply')}")
-        st.sidebar.write(f"ai_message: {new_state.get('ai_message')}")
+        print("=== GRAPH RESPONSE ===")
+        print(f"need_user_reply: {new_state.get('need_user_reply')}")
+        print(f"ai_message: {new_state.get('ai_message')}")
         
         # 处理响应
         if new_state.get("need_user_reply"):
-            # 需要补充信息 - 显示助理的询问
+            # 需要补充信息 - 显示助理询问并停止流程
             ai_message = new_state.get("ai_message", "Please provide more information.")
-            st.session_state.messages.append({"role": "assistant", "content": ai_message})
-            st.session_state.waiting_for_supplement = True
             
+            # 添加助理消息到历史
+            st.session_state.messages.append({"role": "assistant", "content": ai_message})
+            
+            # 显示助理消息
             with st.chat_message("assistant"):
                 st.markdown(ai_message)
             
-            st.rerun()
+            # 设置等待状态
+            st.session_state.waiting_for_input = True
+            
+            print("=== FLOW STOPPED - Waiting for user input ===")
             
         elif new_state.get("llm_answer"):
             # 有最终答案
             answer = new_state.get("llm_answer")
-            st.session_state.messages.append({"role": "assistant", "content": answer})
-            st.session_state.waiting_for_supplement = False
             
+            # 添加助理消息到历史
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+            
+            # 显示助理消息
             with st.chat_message("assistant"):
                 st.markdown(answer)
             
-            # 重置图状态，准备新对话
+            # 重置状态，准备新对话
             st.session_state.graph_state = None
+            st.session_state.waiting_for_input = False
+            
+            print("=== FLOW COMPLETED - Answer provided ===")
             
         else:
             # 其他情况
-            status_msg = "Processing your query..."
+            status_msg = "Processing completed."
             st.session_state.messages.append({"role": "assistant", "content": status_msg})
-            st.session_state.waiting_for_supplement = False
+            st.session_state.waiting_for_input = False
             
             with st.chat_message("assistant"):
                 st.markdown(status_msg)
@@ -1285,14 +1312,21 @@ if prompt := st.chat_input("What is your dental question?"):
     except Exception as e:
         error_msg = f"Sorry, an error occurred: {str(e)}"
         st.session_state.messages.append({"role": "assistant", "content": error_msg})
-        st.session_state.waiting_for_supplement = False
+        st.session_state.waiting_for_input = False
         
         with st.chat_message("assistant"):
             st.markdown(error_msg)
+
+# 显示当前状态（调试）
+st.sidebar.write("### Debug Info")
+st.sidebar.write(f"Waiting for input: {st.session_state.waiting_for_input}")
+st.sidebar.write(f"Messages count: {len(st.session_state.messages)}")
+if st.session_state.graph_state:
+    st.sidebar.write(f"Graph state keys: {list(st.session_state.graph_state.keys())}")
 
 # 重置按钮
 if st.session_state.messages and st.button("Start New Conversation"):
     st.session_state.messages = []
     st.session_state.graph_state = None
-    st.session_state.waiting_for_supplement = False
+    st.session_state.waiting_for_input = False
     st.rerun()
