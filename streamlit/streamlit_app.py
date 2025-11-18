@@ -140,6 +140,9 @@ class MyState(TypedDict):
     summarized_query: str
     parsed_query: str
     user_reply: str
+    ai_message: str
+    need_user_reply: bool
+    user_reply_text: str
 
 
 label_list = [
@@ -675,26 +678,54 @@ chain3 = final_answer_prompt_en | LLM
 # ======================== 处理节点 ========================
 def parse_query(state: MyState):
     logger.info("---NODE: parse_query---")
-    user_query = [message.content for message in state["messages"] if hasattr(message, 'content')]
+    
+    # 获取最新的用户消息
+    messages = state.get("messages", [])
+    if not messages:
+        return {
+            "sufficient_or_insufficient": "insufficient", 
+            "interaction": "No query provided. Please describe your dental issue."
+        }
+    
+    # 获取最后一条用户消息的内容
+    user_query = ""
+    for message in reversed(messages):
+        if hasattr(message, 'content'):
+            user_query = message.content
+            break
+    
+    print(f"parse_query: {user_query}")
+    
+    # 如果用户查询为空或太短，直接返回信息不足
+    if not user_query or len(user_query.strip()) < 3:
+        return {
+            "sufficient_or_insufficient": "insufficient",
+            "interaction": "Your query is too short. Please provide more details about your dental issue."
+        }
+    
+    # 原有的解析逻辑
     query_str = user_query
-    print(f"parse_query: {query_str}")
     parse_outcome = chain1.invoke({"query": query_str, "label_list": "\n".join(label_list)})
     parse_outcome_t = chain1_t.invoke({"query": query_str})
+    
     try:
         parsed_text = getattr(parse_outcome, "content", str(parse_outcome)).strip()
         parsed_json = _extract_json_from_text(parsed_text)
         print(f"parse_json:{parsed_json}")
-        entity_compound_atomic = parsed_json.get("entity", [])
+        
+        entity_compound_atomic = parsed_json.get("entity", {})
         entity_compound = entity_compound_atomic.get("compound", [])
         entity_atomic = entity_compound_atomic.get("atomic", [])
         summarized_query = parsed_json.get("summarized_query")
         target_label = parsed_json.get("target_label", [])
         sufficient_or_insufficient = parsed_json.get("sufficient_or_insufficient", "sufficient")
         interaction = parsed_json.get("interaction", "You need to provide more information.")
+        
         entity_name = []
         entity_name.extend(entity_compound)
         entity_name.extend(entity_atomic)
         entity_name = entity_name[:6]
+        
         parsed_text_t = getattr(parse_outcome_t, "content", str(parse_outcome_t)).strip()
         parsed_json_t = _extract_json_from_text(parsed_text_t)
         parsed_triple = parsed_json_t.get("triple", {})
@@ -709,50 +740,50 @@ def parse_query(state: MyState):
             "target_label": target_label,
             "summarized_query": summarized_query,
             "sufficient_or_insufficient": sufficient_or_insufficient,
-            "interaction" : interaction,
+            "interaction": interaction,
             "parsed_query": parsed_query
-
         }
     except Exception as e:
         logger.warning(f"JSON failed: {e}")
         return {
-            "messages": [AIMessage(content="failed to parse query")],
+            "sufficient_or_insufficient": "insufficient",
+            "interaction": f"I encountered an error processing your query. Please try again or provide more details. Error: {str(e)}"
         }
-    
 
-
-
-
-def user_input(state: dict, user_reply_text = None):
+def user_input_node(state: dict, user_reply_text = None):
     """
     Streamlit 版本：
     1. LangGraph 调用该节点时，会先返回 AI 提示语给前端。
     2. 前端显示提示语，并等待用户输入。
     3. 用户在 Streamlit 输入的内容需要由外部传入 user_reply_text。
     """
+    print("---NODE: user_input---")
+    
     interaction_content = state.get(
         "interaction",
         "Your question is not informative enough. Please describe the problem in more detail."
     )
 
-    ai_message = AIMessage(content=interaction_content)
+    print(f"Interaction content: {interaction_content}")
+    print(f"User reply text: {user_reply_text}")
 
     # 情况 1：还没有收到用户输入（流程暂停，等待前端输入）
-    if not user_reply_text:
+    if user_reply_text is None:
+        print("Waiting for user input...")
         return {
-            "ai_message": ai_message.content,
+            "ai_message": interaction_content,
             "need_user_reply": True,               # 告诉前端：需要用户输入
-            "messages": [],
-            "user_reply": None
+            "messages": []  # 不添加新消息
         }
 
     # 情况 2：已经收到用户输入（流程继续）
+    print(f"Received user reply: {user_reply_text}")
     return {
-        "ai_message": ai_message.content,
+        "ai_message": interaction_content,
         "need_user_reply": False,
-        "messages": [HumanMessage(content=user_reply_text)],
+        "messages": [HumanMessage(content=user_reply_text)],  # 添加用户回复作为新消息
         "user_reply": user_reply_text,
-        "user_reply_text": None
+        "user_reply_text": None  # 清空，避免重复使用
     }
 
 
@@ -1149,7 +1180,7 @@ def build_graphrag_agent(resources):
     builder = StateGraph(MyState)
 
     builder.add_node("parse_query", parse_query)
-    builder.add_node("user_input", lambda state: user_input(state, state.get("user_reply_text")))
+    builder.add_node("user_input", lambda state: user_input_node(state, state.get("user_reply_text")))  # 使用新函数名
     builder.add_node("neo4j_retrieval", lambda state: neo4j_retrieval(state, resources))
     builder.add_node("decide_router", decide_router)
     builder.add_node("api_search", api_search)
@@ -1182,18 +1213,31 @@ graph = build_graphrag_agent(resources)
 def invoke_graph_with_state(graph, state_input: dict):
     """
     调用 graph.invoke 并返回新的 state（字典）。
-    state_input 可以是 {"messages": [...]} 或上一次的完整 state（并可包含 user_reply_text）
     """
-    return graph.invoke(state_input)
+    try:
+        print(f"Invoking graph with keys: {list(state_input.keys())}")
+        result = graph.invoke(state_input)
+        print(f"Graph invocation successful, result keys: {list(result.keys())}")
+        return result
+    except Exception as e:
+        st.error(f"Error invoking graph: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "ai_message": f"Error: {str(e)}",
+            "need_user_reply": False,
+            "llm_answer": f"Sorry, an error occurred: {str(e)}"
+        }
 
 # Streamlit UI ----------------------------------------------------
 st.title("DGADIS - Streamlit Demo")
 
 if "graph_state" not in st.session_state:
-    st.session_state["graph_state"] = None   # current state returned by graph
+    st.session_state["graph_state"] = None
 if "conversation_history" not in st.session_state:
-    st.session_state["conversation_history"] = []  # optional: store chat turns
+    st.session_state["conversation_history"] = []
 
+# 使用不同的变量名避免冲突
 initial_query_input = st.text_input("Please input your dental question:", key="initial_query")
 
 # 初次提交用户问题
@@ -1205,52 +1249,52 @@ if st.button("Submit Query"):
         inputs = {"messages": [HumanMessage(content=initial_query_input.strip())]}
         new_state = invoke_graph_with_state(graph, inputs)
         st.session_state["graph_state"] = new_state
-        # 记录用户提问（可选）
+        # 记录用户提问
         st.session_state["conversation_history"].append(("user", initial_query_input.strip()))
         st.rerun()
 
-# 如果已经有 graph_state（说明流程正在进行或已完成）
+# 如果已经有 graph_state
 state = st.session_state.get("graph_state")
 if state:
-    # 若节点要求补充信息（user_input 节点返回 need_user_reply True）
+    # 添加调试信息
+    st.sidebar.write("Debug Info:")
+    st.sidebar.write(f"need_user_reply: {state.get('need_user_reply')}")
+    st.sidebar.write(f"sufficient_or_insufficient: {state.get('sufficient_or_insufficient')}")
+    st.sidebar.write(f"ai_message: {state.get('ai_message')}")
+    
+    # 若节点要求补充信息
     if state.get("need_user_reply"):
-        st.info("Agent asks:")
+        st.info("🤔 Agent asks for more information:")
         st.write(state.get("ai_message", "Please provide more information."))
 
-        # 补充信息输入框 —— 使用独立 key，避免与初始输入冲突
+        # 补充信息输入框
         reply = st.text_input("Please enter the additional info:", key="supplement_reply")
 
         if st.button("Continue with supplement"):
             if not reply or not reply.strip():
                 st.warning("Please enter supplemental information before continuing.")
             else:
-                # 将用户补充写入 state 并再次调用 graph 继续流程
-                # 注意：把之前的 state 作为输入传入，同时包含 user_reply_text 字段
-                # 这样 user_input 节点会接收到 user_reply_text 并返回 messages 包含 HumanMessage
-                state_input = dict(state)  # shallow copy
-                # 把 user_reply_text 作为临时字段注入
+                # 将用户补充写入 state 并再次调用 graph
+                state_input = dict(state)
                 state_input["user_reply_text"] = reply.strip()
+                
                 new_state = invoke_graph_with_state(graph, state_input)
                 st.session_state["graph_state"] = new_state
                 st.session_state["conversation_history"].append(("user", reply.strip()))
                 st.rerun()
 
     else:
-        # 如果不需要补充，查看是否有最终答案（llm_answer）
+        # 如果不需要补充，查看是否有最终答案
         llm_ans = state.get("llm_answer")
         if llm_ans:
-            st.success("Answer from agent:")
+            st.success("✅ Answer from agent:")
             st.write(llm_ans)
-            # 可选：显示检索到的 neo4j/knowledge results
-            #if state.get("neo4j_retrieval") is not None:
-                #st.subheader("Neo4j / Retrieval results")
-                #st.write(state.get("neo4j_retrieval"))
-            # 可选：重置会话或继续下一轮对话
+            
             if st.button("Start new question"):
                 st.session_state["graph_state"] = None
                 st.session_state["conversation_history"] = []
                 st.rerun()
         else:
-            # 情况：既不需要补充也没有 llm_answer —— 输出当前 state 以便排查
-            st.write("Current state (no further action):")
-            st.json(state)
+            # 显示当前状态用于调试
+            st.write("Current state (processing...):")
+            st.json({k: v for k, v in state.items() if k not in ['messages']})
