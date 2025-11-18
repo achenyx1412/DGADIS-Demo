@@ -797,9 +797,14 @@ def whether_to_interact(state):
         print("Decision: Information is sufficient to continue.")
         return "neo4j_retrieval"
     else:
-        print("Decision: Unknown state, stopping.")
-        return "__end__"
-
+        print("Decision: Unknown state, ending flow.")
+        return END
+def after_user_input(state):
+    """决定 user_input 节点后的路径"""
+    if state.get("user_reply_text"):
+        return "parse_query"
+    else:
+        return END
 def neo4j_retrieval(state: MyState, resources):
     idx1 = faiss.read_index("data/faiss_node+desc.index")
     with open("data/faiss_node+desc.pkl", "rb") as f:
@@ -1193,10 +1198,9 @@ def build_graphrag_agent(resources):
         }
     )
     
-    # 修复：使用 END 而不是 __end__
     builder.add_conditional_edges(
         "user_input",
-        lambda state: "parse_query" if state.get("user_reply_text") else END,  # 使用 END
+        after_user_input,  # ✅ 使用专门的函数
         {
             "parse_query": "parse_query"
         }
