@@ -791,20 +791,36 @@ def whether_to_interact(state):
     print(f"sufficient_or_insufficient: {interaction}")
     
     if interaction == "insufficient":
-        print("Decision: Insufficient information, STOPPING FLOW for user input.")
+        print("Decision: Insufficient information, need user input.")
         return "user_input"
     elif interaction == "sufficient":
         print("Decision: Information is sufficient to continue.")
         return "neo4j_retrieval"
     else:
-        print("Decision: Unknown state, ending flow.")
-        return END
+        print(f"Decision: Unknown state '{interaction}', routing to neo4j_retrieval as default.")
+        # 不要返回 END，而是有一个默认路径
+        return "neo4j_retrieval"
+
 def after_user_input(state):
     """决定 user_input 节点后的路径"""
+    print("---EDGE: after_user_input---")
+    print(f"user_reply_text: {state.get('user_reply_text')}")
+    print(f"need_user_reply: {state.get('need_user_reply')}")
+    
+    # 如果需要用户回复（等待输入），结束当前流程
+    if state.get("need_user_reply"):
+        print("Decision: Waiting for user input, ending flow.")
+        return "end"  # 返回特殊的 "end" 键
+    
+    # 如果有用户回复，继续流程
     if state.get("user_reply_text"):
+        print("Decision: User provided input, continuing to parse_query.")
         return "parse_query"
-    else:
-        return END
+    
+    # 默认情况
+    print("Decision: No user input needed, ending flow.")
+    return "end"
+
 def neo4j_retrieval(state: MyState, resources):
     idx1 = faiss.read_index("data/faiss_node+desc.index")
     with open("data/faiss_node+desc.pkl", "rb") as f:
@@ -1181,6 +1197,7 @@ def llm_answer(state: MyState):
 def build_graphrag_agent(resources):
     builder = StateGraph(MyState)
 
+    # 添加所有节点
     builder.add_node("parse_query", parse_query)
     builder.add_node("user_input", lambda state: handle_user_input(state, state.get("user_reply_text")))
     builder.add_node("neo4j_retrieval", lambda state: neo4j_retrieval(state, resources))
@@ -1188,7 +1205,10 @@ def build_graphrag_agent(resources):
     builder.add_node("api_search", api_search)
     builder.add_node("llm_answer", llm_answer)
 
+    # 起始边
     builder.add_edge(START, "parse_query")
+    
+    # parse_query 后的条件边
     builder.add_conditional_edges(
         "parse_query",
         whether_to_interact,
@@ -1198,15 +1218,20 @@ def build_graphrag_agent(resources):
         }
     )
     
+    # user_input 后的条件边 - 关键修复！
     builder.add_conditional_edges(
         "user_input",
-        after_user_input,  # ✅ 使用专门的函数
+        after_user_input,
         {
-            "parse_query": "parse_query"
+            "parse_query": "parse_query",
+            "end": END  # 将 "end" 字符串映射到 END 常量
         }
     )
     
+    # neo4j_retrieval 到 decide_router
     builder.add_edge("neo4j_retrieval", "decide_router")
+    
+    # decide_router 后的条件边
     builder.add_conditional_edges(
         "decide_router",
         lambda state: state["route"],
@@ -1215,15 +1240,18 @@ def build_graphrag_agent(resources):
             "llm_answer": "llm_answer"
         }
     )
+    
+    # 最终边
     builder.add_edge("api_search", "llm_answer")
     builder.add_edge("llm_answer", END)
     
     return builder.compile()
+
+# ==================== Streamlit UI ====================
 # 加载资源和构建图
 resources = load_all_resources()
 graph = build_graphrag_agent(resources)
 
-# Streamlit UI - 使用官方聊天机器人模式
 st.title("DGADIS - Dental Assistant")
 
 # 初始化状态
@@ -1255,7 +1283,8 @@ if prompt := st.chat_input("What is your dental question?"):
     else:
         # 后续调用 - 用户提供补充信息
         inputs = dict(st.session_state.graph_state)
-        inputs["user_reply_text"] = prompt  # 关键：提供用户回复
+        inputs["user_reply_text"] = prompt
+        inputs["need_user_reply"] = False  # 清除等待标记
         print("=== CONTINUATION CALL with user_reply_text ===")
     
     # 调用图
@@ -1273,10 +1302,8 @@ if prompt := st.chat_input("What is your dental question?"):
             # 需要补充信息 - 显示助理询问
             ai_message = new_state.get("ai_message", "Please provide more information.")
             
-            # 添加助理消息到历史
             st.session_state.messages.append({"role": "assistant", "content": ai_message})
             
-            # 显示助理消息
             with st.chat_message("assistant"):
                 st.markdown(ai_message)
             
@@ -1286,10 +1313,8 @@ if prompt := st.chat_input("What is your dental question?"):
             # 有最终答案
             answer = new_state.get("llm_answer")
             
-            # 添加助理消息到历史
             st.session_state.messages.append({"role": "assistant", "content": answer})
             
-            # 显示助理消息
             with st.chat_message("assistant"):
                 st.markdown(answer)
             
@@ -1307,6 +1332,10 @@ if prompt := st.chat_input("What is your dental question?"):
                 st.markdown(status_msg)
                 
     except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"ERROR: {error_detail}")
+        
         error_msg = f"Sorry, an error occurred: {str(e)}"
         st.session_state.messages.append({"role": "assistant", "content": error_msg})
         
