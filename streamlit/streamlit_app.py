@@ -1194,19 +1194,19 @@ if "graph_state" not in st.session_state:
 if "conversation_history" not in st.session_state:
     st.session_state["conversation_history"] = []  # optional: store chat turns
 
-user_input = st.text_input("Please input your dental question:", key="initial_query")
+initial_query_input = st.text_input("Please input your dental question:", key="initial_query")
 
 # 初次提交用户问题
 if st.button("Submit Query"):
-    if not user_input or not user_input.strip():
+    if not initial_query_input or not initial_query_input.strip():
         st.warning("Please input a question.")
     else:
         # 构造 messages 并第一次调用 graph
-        inputs = {"messages": [HumanMessage(content=user_input.strip())]}
+        inputs = {"messages": [HumanMessage(content=initial_query_input.strip())]}
         new_state = invoke_graph_with_state(graph, inputs)
         st.session_state["graph_state"] = new_state
         # 记录用户提问（可选）
-        st.session_state["conversation_history"].append(("user", user_input.strip()))
+        st.session_state["conversation_history"].append(("user", initial_query_input.strip()))
         st.rerun()
 
 # 如果已经有 graph_state（说明流程正在进行或已完成）
