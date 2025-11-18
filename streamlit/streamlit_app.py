@@ -1208,88 +1208,91 @@ graph = build_graphrag_agent(resources)
 # Streamlit UI - 使用官方聊天机器人模式
 st.title("DGADIS - Dental Assistant")
 
-# 初始化聊天历史
+# 初始化状态
 if "messages" not in st.session_state:
     st.session_state.messages = []
-
-# 初始化图状态
 if "graph_state" not in st.session_state:
     st.session_state.graph_state = None
+if "waiting_for_supplement" not in st.session_state:
+    st.session_state.waiting_for_supplement = False
 
-# 显示聊天消息
+# 显示聊天历史
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 # 处理用户输入
 if prompt := st.chat_input("What is your dental question?"):
-    # 添加用户消息到聊天历史
+    # 添加用户消息
     st.session_state.messages.append({"role": "user", "content": prompt})
     
     # 显示用户消息
     with st.chat_message("user"):
         st.markdown(prompt)
     
-    # 调用图处理用户输入
+    # 准备输入
+    if st.session_state.graph_state is None:
+        # 第一次调用
+        inputs = {"messages": [HumanMessage(content=prompt)]}
+    else:
+        # 后续调用（补充信息）
+        inputs = dict(st.session_state.graph_state)
+        inputs["user_reply_text"] = prompt
+    
+    # 调用图
     try:
-        if st.session_state.graph_state is None:
-            # 第一次调用，传入初始消息
-            inputs = {"messages": [HumanMessage(content=prompt)]}
-        else:
-            # 后续调用，传入当前状态和用户回复
-            state_input = dict(st.session_state.graph_state)
-            state_input["user_reply_text"] = prompt
-            inputs = state_input
-        
-        # 调用图
         new_state = graph.invoke(inputs)
         st.session_state.graph_state = new_state
         
-        # 处理图的响应
+        # 调试信息
+        st.sidebar.write("Debug Info:")
+        st.sidebar.write(f"need_user_reply: {new_state.get('need_user_reply')}")
+        st.sidebar.write(f"ai_message: {new_state.get('ai_message')}")
+        
+        # 处理响应
         if new_state.get("need_user_reply"):
-            # 需要用户补充信息
+            # 需要补充信息 - 显示助理的询问
             ai_message = new_state.get("ai_message", "Please provide more information.")
             st.session_state.messages.append({"role": "assistant", "content": ai_message})
+            st.session_state.waiting_for_supplement = True
             
-            # 显示助理消息
             with st.chat_message("assistant"):
                 st.markdown(ai_message)
             
-            # 重新运行以等待用户输入
             st.rerun()
-        
+            
         elif new_state.get("llm_answer"):
             # 有最终答案
             answer = new_state.get("llm_answer")
             st.session_state.messages.append({"role": "assistant", "content": answer})
+            st.session_state.waiting_for_supplement = False
             
-            # 显示助理消息
             with st.chat_message("assistant"):
                 st.markdown(answer)
             
             # 重置图状态，准备新对话
             st.session_state.graph_state = None
-        
+            
         else:
-            # 其他情况，显示状态信息
+            # 其他情况
             status_msg = "Processing your query..."
             st.session_state.messages.append({"role": "assistant", "content": status_msg})
+            st.session_state.waiting_for_supplement = False
             
             with st.chat_message("assistant"):
                 st.markdown(status_msg)
-    
+                
     except Exception as e:
-        # 错误处理
         error_msg = f"Sorry, an error occurred: {str(e)}"
         st.session_state.messages.append({"role": "assistant", "content": error_msg})
+        st.session_state.waiting_for_supplement = False
         
         with st.chat_message("assistant"):
             st.markdown(error_msg)
-        
-        st.session_state.graph_state = None
 
-# 添加重置按钮
+# 重置按钮
 if st.session_state.messages and st.button("Start New Conversation"):
     st.session_state.messages = []
     st.session_state.graph_state = None
+    st.session_state.waiting_for_supplement = False
     st.rerun()
