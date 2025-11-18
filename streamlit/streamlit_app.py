@@ -933,7 +933,7 @@ def neo4j_retrieval(state: MyState, resources):
             continue
 
     try:
-        if not hf_client:
+        if not similarity_client:
             raise ValueError("HuggingFace client not initialized")
             
         path_keys = list(path_kv.keys())
@@ -946,7 +946,7 @@ def neo4j_retrieval(state: MyState, resources):
         logger.info("Calculating similarity scores using feature extraction...")
         
         # 获取查询的嵌入
-        query_embedding = hf_client.feature_extraction(
+        query_embedding = similarity_client.feature_extraction(
             query_text,
             model="BAAI/bge-m3",
         )
@@ -961,7 +961,7 @@ def neo4j_retrieval(state: MyState, resources):
             batch_keys = path_keys[i:i + batch_size]
             try:
                 # 获取批次嵌入
-                batch_embeddings = hf_client.feature_extraction(
+                batch_embeddings = similarity_client.feature_extraction(
                     batch_keys,
                     model="BAAI/bge-m3",
                 )
@@ -1002,7 +1002,7 @@ def neo4j_retrieval(state: MyState, resources):
             batch_inputs = rerank_inputs[i:i + cross_batch_size]
             try:
                 # 调用text_classification API进行重排序
-                batch_results = hf_client.text_classification(
+                batch_results = rerank_client.text_classification(
                     batch_inputs,
                     model="BAAI/bge-reranker-v2-m3",
                 )
