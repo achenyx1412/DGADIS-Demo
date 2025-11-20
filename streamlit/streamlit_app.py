@@ -35,19 +35,14 @@ logger = logging.getLogger(__name__)
 DS_API_KEY = st.secrets.get("DS_API_KEY")
 HF_TOKEN = st.secrets.get("HF_TOKEN")
 try:
-    # 用于特征提取的客户端
     feature_client = InferenceClient(
         provider="hf-inference",
         api_key=os.environ["HF_TOKEN"],
     )
-    
-    # 用于句子相似度的客户端  
     similarity_client = InferenceClient(
         provider="hf-inference",
         api_key=os.environ["HF_TOKEN"],
     )
-    
-    # 用于重排序的客户端
     rerank_client = InferenceClient(
         provider="auto",
         api_key=os.environ["HF_TOKEN"],
@@ -68,14 +63,11 @@ MAX_TOKENS = 128000
 @st.cache_resource(show_spinner="Loading data resources...")
 def load_all_resources():
     try:
-        # --- 1. 检查 TOKEN ---
         if not HF_TOKEN:
             st.error("❌ HF_TOKEN not found, please configure in Streamlit Secrets")
             st.stop()
         
         os.makedirs("data", exist_ok=True)
-        
-        # --- 2. 下载文件 ---
         files_to_download = [
             "faiss_node+desc.index",
             "faiss_node+desc.pkl",
@@ -109,7 +101,7 @@ def load_all_resources():
             import traceback
             st.code(traceback.format_exc())
         st.stop()
-# ======================== 全局变量 ========================
+# ======================== Global variables ========================
 faiss_indices = {}
 metadata = {}
 graph = None
@@ -124,7 +116,7 @@ llm = None
 name_search_engine = None
 compiled_graph = None
 
-# ======================== 状态定义 ========================
+# ======================== State definition ========================
 class MyState(TypedDict):
     messages: Annotated[List[AnyMessage], add_messages]
     entity: list
@@ -155,7 +147,7 @@ label_list = [
 ]
 
 
-# ======================== 名称搜索引擎 ========================
+# ======================== Name search engine ========================
 class NameSearchEngine:
     def __init__(self, merged_data_df):
         self.merged_data = merged_data_df
@@ -199,7 +191,7 @@ class NameSearchEngine:
                 })
         results.sort(key=lambda x: x['similarity'], reverse=True)
         return [r['searched_name'] for r in results[:topk]]
-# ======================== 辅助函数 ========================
+# ======================== Helper functions ========================
 def _extract_json_from_text(text: str) -> Dict[str, Any]:
     try:
         return json.loads(text)
@@ -214,25 +206,18 @@ def _extract_json_from_text(text: str) -> Dict[str, Any]:
             return {}
     return {}
 def embed_entity(entity_text: str):
-    """使用API进行实体嵌入 - 严格按照示例"""
     if not feature_client:
         raise ValueError("Feature extraction client not initialized")
     
     try:
-        # 严格按照示例代码格式
         result = feature_client.feature_extraction(
             entity_text,
             model="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
         )
-        
-        # 处理返回的嵌入向量
         if hasattr(result, 'shape'):
             embedding = result
         else:
-            # 如果是其他格式，转换为numpy数组
             embedding = np.array(result)
-            
-        # 确保是一维向量
         if len(embedding.shape) > 1:
             embedding = np.mean(embedding, axis=0)
             
@@ -293,7 +278,7 @@ def search_wikipedia(wikipedia_query, max_chars_per_entity=500) -> str:
         logger.warning(f"error in Wikipedia: {e}")
         return f"error in Wikipedia: {str(e)}"
 
-# ======================== Prompt 模板 ========================
+# ======================== Prompt ========================
 LLM = ChatOpenAI(model="deepseek-reasoner",api_key=DS_API_KEY,base_url="https://api.deepseek.com/v1",temperature=0.0)
 extract_prompt_en = PromptTemplate(
     input_variables=["query", "label_list"],
@@ -675,11 +660,11 @@ Your answer must be in English
 """
 )
 chain3 = final_answer_prompt_en | LLM
-# ======================== 处理节点 ========================
+# ======================== Processing nodes ========================
 def parse_query(state: MyState):
     logger.info("---NODE: parse_query---")
     
-    # 获取最新的用户消息
+    # Get the latest user messages
     messages = state.get("messages", [])
     if not messages:
         return {
@@ -687,7 +672,7 @@ def parse_query(state: MyState):
             "interaction": "No query provided. Please describe your dental issue."
         }
     
-    # 获取最后一条用户消息的内容
+    # Get the content of the last user message
     user_query = ""
     for message in reversed(messages):
         if hasattr(message, 'content'):
@@ -696,14 +681,12 @@ def parse_query(state: MyState):
     
     print(f"parse_query: {user_query}")
     
-    # 如果用户查询为空或太短，直接返回信息不足
     if not user_query or len(user_query.strip()) < 3:
         return {
             "sufficient_or_insufficient": "insufficient",
             "interaction": "Your query is too short. Please provide more details about your dental issue."
         }
     
-    # 原有的解析逻辑
     query_str = user_query
     parse_outcome = chain1.invoke({"query": query_str, "label_list": "\n".join(label_list)})
     parse_outcome_t = chain1_t.invoke({"query": query_str})
@@ -751,9 +734,6 @@ def parse_query(state: MyState):
         }
 
 def handle_user_input(state: dict, user_reply_text = None):
-    """
-    Streamlit 版本 - 需要交互时通过特殊状态停止流程
-    """
     print("---NODE: user_input---")
     
     interaction_content = state.get(
@@ -764,28 +744,27 @@ def handle_user_input(state: dict, user_reply_text = None):
     print(f"Interaction content: {interaction_content}")
     print(f"User reply text: {user_reply_text}")
 
-    # 情况 1：还没有收到用户输入（设置停止状态）
+    # Case 1: No user input yet (set stop state)
     if not user_reply_text:
         print("STOPPING FLOW - Waiting for user input...")
         return {
             "ai_message": interaction_content,
-            "need_user_reply": True,               # 告诉前端：需要用户输入
-            "flow_stopped": True,                  # 标记流程已停止
-            # 不返回 messages，保持原有的对话记录
+            "need_user_reply": True,               # Tell the frontend need_user_reply
+            "flow_stopped": True,
+            # messages are not returned, and the original conversation is kept
         }
 
-    # 情况 2：已经收到用户输入（清除停止状态，继续流程）
+    # Case 2: User input has been received (clear stop status, continue process)
     print(f"RESUMING FLOW - Received user reply: {user_reply_text}")
     return {
         "ai_message": interaction_content,
         "need_user_reply": False,
-        "flow_stopped": False,                     # 清除停止标记
-        "messages": [HumanMessage(content=user_reply_text)],  # 添加新的用户消息
+        "flow_stopped": False,
+        "messages": [HumanMessage(content=user_reply_text)],  # Add a new user message
         "user_reply": user_reply_text,
     }
 
 def whether_to_interact(state):
-    """判断是否需要与用户交互。"""
     print("---EDGE: whether_to_interact---")
     interaction = state.get("sufficient_or_insufficient")
     print(f"sufficient_or_insufficient: {interaction}")
@@ -798,26 +777,22 @@ def whether_to_interact(state):
         return "neo4j_retrieval"
     else:
         print(f"Decision: Unknown state '{interaction}', routing to neo4j_retrieval as default.")
-        # 不要返回 END，而是有一个默认路径
         return "neo4j_retrieval"
 
 def after_user_input(state):
-    """决定 user_input 节点后的路径"""
     print("---EDGE: after_user_input---")
     print(f"user_reply_text: {state.get('user_reply_text')}")
     print(f"need_user_reply: {state.get('need_user_reply')}")
     
-    # 如果需要用户回复（等待输入），结束当前流程
+    # If a user response is needed (waiting for input), end the current flow
     if state.get("need_user_reply"):
         print("Decision: Waiting for user input, ending flow.")
-        return "end"  # 返回特殊的 "end" 键
+        return "end"
     
-    # 如果有用户回复，继续流程
+    # If user replies, continue the process
     if state.get("user_reply_text"):
         print("Decision: User provided input, continuing to parse_query.")
         return "parse_query"
-    
-    # 默认情况
     print("Decision: No user input needed, ending flow.")
     return "end"
 
@@ -854,7 +829,7 @@ def neo4j_retrieval(state: MyState, resources):
             D, I = idx3.search(entity_embedding2, 5)
             candidate_triples = []
             for idx in I[0]:
-                idx_int = int(idx)  # ✅ 确保是 Python int
+                idx_int = int(idx)
                 if 0 <= idx_int < len(meta3):
                     candidate_triples.append(meta3[idx_int])
                 else:
@@ -977,7 +952,6 @@ def neo4j_retrieval(state: MyState, resources):
 
         except Exception as e:
             logger.warning(f"'{entity}' failed in faiss: {e}")
-            # 添加调试信息
             logger.debug(f"Entity: {entity}, Embedding shape: {entity_embedding.shape if 'entity_embedding' in locals() else 'N/A'}")
             continue
 
@@ -991,10 +965,8 @@ def neo4j_retrieval(state: MyState, resources):
             logger.warning("No paths found for reranking")
             return {"neo4j_retrieval": []}
         
-        # 方法1: 使用feature_extraction手动计算相似度（更可靠）
         logger.info("Calculating similarity scores using feature extraction...")
         
-        # 获取查询的嵌入
         query_embedding = similarity_client.feature_extraction(
             query_text,
             model="BAAI/bge-m3",
@@ -1002,25 +974,21 @@ def neo4j_retrieval(state: MyState, resources):
         if hasattr(query_embedding, 'shape') and len(query_embedding.shape) > 1:
             query_embedding = query_embedding.mean(axis=1).squeeze()
         
-        # 批量获取候选路径的嵌入并计算相似度
         batch_size = 16
         sim_scores = []
         
         for i in range(0, len(path_keys), batch_size):
             batch_keys = path_keys[i:i + batch_size]
             try:
-                # 获取批次嵌入
                 batch_embeddings = similarity_client.feature_extraction(
                     batch_keys,
                     model="BAAI/bge-m3",
                 )
                 
-                # 计算余弦相似度
                 for j, key_embedding in enumerate(batch_embeddings):
                     if hasattr(key_embedding, 'shape') and len(key_embedding.shape) > 1:
                         key_embedding = key_embedding.mean(axis=1).squeeze()
                     
-                    # 计算余弦相似度
                     similarity = np.dot(query_embedding, key_embedding) / (
                         np.linalg.norm(query_embedding) * np.linalg.norm(key_embedding)
                     )
@@ -1028,35 +996,28 @@ def neo4j_retrieval(state: MyState, resources):
                     
             except Exception as batch_error:
                 logger.warning(f"Batch similarity calculation error: {batch_error}")
-                # 为失败的批次添加默认分数
                 sim_scores.extend([0.0] * len(batch_keys))
         
         scored_paths = list(zip(path_keys, sim_scores))
         scored_paths.sort(key=lambda x: x[1], reverse=True)
         top100 = scored_paths[:100]
 
-        # 重排序部分
         logger.info("Performing cross-encoder reranking...")
-        
-        # 准备重排序的文本对
         rerank_inputs = []
         for path_key, score in top100:
-            # 构造适合重排序的输入格式
             rerank_inputs.append(f"{query_text} [SEP] {path_key}")
         
         all_cross_scores = []
-        cross_batch_size = 8  # 减小批次大小避免超时
+        cross_batch_size = 8
         
         for i in range(0, len(rerank_inputs), cross_batch_size):
             batch_inputs = rerank_inputs[i:i + cross_batch_size]
             try:
-                # 调用text_classification API进行重排序
                 batch_results = rerank_client.text_classification(
                     batch_inputs,
                     model="BAAI/bge-reranker-v2-m3",
                 )
                 
-                # 提取分数
                 batch_scores = []
                 for result in batch_results:
                     if hasattr(result, 'score'):
@@ -1064,7 +1025,7 @@ def neo4j_retrieval(state: MyState, resources):
                     elif isinstance(result, list) and len(result) > 0:
                         batch_scores.append(result[0]['score'])
                     else:
-                        batch_scores.append(0.5)  # 默认分数
+                        batch_scores.append(0.5)
                         
                 all_cross_scores.extend(batch_scores)
                 
@@ -1082,7 +1043,6 @@ def neo4j_retrieval(state: MyState, resources):
 
     except Exception as e:
         logger.warning(f"Rerank error: {e}")
-        # 返回所有路径作为后备
         fallback_values = list(path_kv.values())[:50]
         return {"neo4j_retrieval": fallback_values}
 
@@ -1152,7 +1112,7 @@ def api_search(state: MyState) -> dict:
     return {"api_search": api_search_result}
 
 def llm_answer(state: MyState):
-    print("回答步骤")
+    print("Answering process")
     neo4j_data = state.get("neo4j_retrieval")
     neo4j_retrieval = json.dumps(neo4j_data, ensure_ascii=False)
     api_search_result = state.get("api_search")
@@ -1197,7 +1157,6 @@ def llm_answer(state: MyState):
 def build_graphrag_agent(resources):
     builder = StateGraph(MyState)
 
-    # 添加所有节点
     builder.add_node("parse_query", parse_query)
     builder.add_node("user_input", lambda state: handle_user_input(state, state.get("user_reply_text")))
     builder.add_node("neo4j_retrieval", lambda state: neo4j_retrieval(state, resources))
@@ -1205,10 +1164,7 @@ def build_graphrag_agent(resources):
     builder.add_node("api_search", api_search)
     builder.add_node("llm_answer", llm_answer)
 
-    # 起始边
     builder.add_edge(START, "parse_query")
-    
-    # parse_query 后的条件边
     builder.add_conditional_edges(
         "parse_query",
         whether_to_interact,
@@ -1218,20 +1174,16 @@ def build_graphrag_agent(resources):
         }
     )
     
-    # user_input 后的条件边 - 关键修复！
     builder.add_conditional_edges(
         "user_input",
         after_user_input,
         {
             "parse_query": "parse_query",
-            "end": END  # 将 "end" 字符串映射到 END 常量
+            "end": END  # Maps the "end" string to the END constant
         }
     )
     
-    # neo4j_retrieval 到 decide_router
     builder.add_edge("neo4j_retrieval", "decide_router")
-    
-    # decide_router 后的条件边
     builder.add_conditional_edges(
         "decide_router",
         lambda state: state["route"],
@@ -1240,54 +1192,45 @@ def build_graphrag_agent(resources):
             "llm_answer": "llm_answer"
         }
     )
-    
-    # 最终边
     builder.add_edge("api_search", "llm_answer")
     builder.add_edge("llm_answer", END)
     
     return builder.compile()
 
 # ==================== Streamlit UI ====================
-# 加载资源和构建图
+# Loading the data and building the graph
 resources = load_all_resources()
 graph = build_graphrag_agent(resources)
 
 st.title("DGADIS - Dental Assistant")
 
-# 初始化状态
+# Initializing
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "graph_state" not in st.session_state:
     st.session_state.graph_state = None
 
-# 显示聊天历史
+# Display chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# 处理用户输入
+# Processing user input
 if prompt := st.chat_input("What is your dental question?"):
-    
-    # 添加用户消息到历史
+
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    # 显示用户消息
     with st.chat_message("user"):
         st.markdown(prompt)
     
-    # 准备输入
     if st.session_state.graph_state is None:
-        # 第一次调用 - 全新的对话
         inputs = {"messages": [HumanMessage(content=prompt)]}
         print("=== FIRST CALL ===")
     else:
-        # 后续调用 - 用户提供补充信息
         inputs = dict(st.session_state.graph_state)
         inputs["user_reply_text"] = prompt
-        inputs["need_user_reply"] = False  # 清除等待标记
+        inputs["need_user_reply"] = False
         print("=== CONTINUATION CALL with user_reply_text ===")
-    
-    # 调用图
     try:
         new_state = graph.invoke(inputs)
         st.session_state.graph_state = new_state
@@ -1297,20 +1240,14 @@ if prompt := st.chat_input("What is your dental question?"):
         print(f"ai_message: {new_state.get('ai_message')}")
         print(f"flow_stopped: {new_state.get('flow_stopped')}")
         
-        # 处理响应
         if new_state.get("need_user_reply"):
-            # 需要补充信息 - 显示助理询问
             ai_message = new_state.get("ai_message", "Please provide more information.")
-            
             st.session_state.messages.append({"role": "assistant", "content": ai_message})
-            
             with st.chat_message("assistant"):
                 st.markdown(ai_message)
-            
             print("=== WAITING FOR USER INPUT ===")
             
         elif new_state.get("llm_answer"):
-            # 有最终答案
             answer = new_state.get("llm_answer")
             
             st.session_state.messages.append({"role": "assistant", "content": answer})
@@ -1318,13 +1255,11 @@ if prompt := st.chat_input("What is your dental question?"):
             with st.chat_message("assistant"):
                 st.markdown(answer)
             
-            # 重置状态，准备新对话
             st.session_state.graph_state = None
             
             print("=== FLOW COMPLETED ===")
             
         else:
-            # 其他情况
             status_msg = "Processing completed."
             st.session_state.messages.append({"role": "assistant", "content": status_msg})
             
@@ -1342,7 +1277,6 @@ if prompt := st.chat_input("What is your dental question?"):
         with st.chat_message("assistant"):
             st.markdown(error_msg)
 
-# 重置按钮
 if st.session_state.messages and st.button("Start New Conversation"):
     st.session_state.messages = []
     st.session_state.graph_state = None
