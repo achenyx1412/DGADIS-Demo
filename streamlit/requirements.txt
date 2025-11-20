@@ -1,14 +1,14 @@
 # Core
 streamlit>=1.28.0
 
-# Hugging Face (只需要基础库)
+# Hugging Face
 datasets>=2.14.0
 huggingface-hub>=0.19.0
 
 # Vector Search
 faiss-cpu>=1.7.4
 
-# HTTP 请求（用于 API 调用）
+# HTTP
 requests>=2.31.0
 
 # Data Processing
