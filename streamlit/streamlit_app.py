@@ -1022,16 +1022,27 @@ def neo4j_retrieval(state: MyState, resources):
                 
                 batch_scores = []
                 for embedding in batch_embeddings:
-                    if hasattr(embedding, 'shape'):
-                        # 如果是多维数组，使用适当的聚合方法
-                        if len(embedding.shape) == 1:
-                            score = float(np.linalg.norm(embedding))
+                    try:
+                        if not isinstance(embedding, np.ndarray):
+                            embedding_array = np.array(embedding)
                         else:
-                            avg_embedding = embedding.mean(axis=0)
-                            score = float(np.linalg.norm(avg_embedding))
-                    else:
-                        score = float(np.linalg.norm(np.array(embedding)))
+                            embedding_array = embedding
                         
+                        if embedding_array.ndim == 1:
+                            score = float(np.linalg.norm(embedding_array))
+                        elif embedding_array.ndim == 2:
+                            avg_embedding = embedding_array.mean(axis=0)
+                            score = float(np.linalg.norm(avg_embedding))
+                        else:
+                            flattened = embedding_array.flatten()
+                            score = float(np.linalg.norm(flattened))
+                            
+                        score = max(0.0, min(1.0, score))
+                        
+                    except Exception as embed_error:
+                        logger.warning(f"Embedding processing error: {embed_error}")
+                        score = 0.5
+                    
                     batch_scores.append(score)
                     
                 all_rerank_scores.extend(batch_scores)
