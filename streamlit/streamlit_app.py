@@ -1002,43 +1002,52 @@ def neo4j_retrieval(state: MyState, resources):
         scored_paths.sort(key=lambda x: x[1], reverse=True)
         top100 = scored_paths[:100]
 
-        logger.info("Performing cross-encoder reranking...")
+        logger.info("Performing cross-encoder reranking with BAAI/bge-reranker-large...")
+        
         rerank_inputs = []
         for path_key, score in top100:
-            rerank_inputs.append(f"{query_text} [SEP] {path_key}")
+            text_pair = f"{query_text} [SEP] {path_key}"
+            rerank_inputs.append(text_pair)
         
-        all_cross_scores = []
-        cross_batch_size = 8
+        all_rerank_scores = []
+        rerank_batch_size = 8
         
-        for i in range(0, len(rerank_inputs), cross_batch_size):
-            batch_inputs = rerank_inputs[i:i + cross_batch_size]
+        for i in range(0, len(rerank_inputs), rerank_batch_size):
+            batch_inputs = rerank_inputs[i:i + rerank_batch_size]
             try:
-                batch_results = rerank_client.text_classification(
+                batch_embeddings = similarity_client.feature_extraction(
                     batch_inputs,
-                    model="BAAI/bge-reranker-v2-m3",
+                    model="BAAI/bge-reranker-large",
                 )
                 
                 batch_scores = []
-                for result in batch_results:
-                    if hasattr(result, 'score'):
-                        batch_scores.append(result.score)
-                    elif isinstance(result, list) and len(result) > 0:
-                        batch_scores.append(result[0]['score'])
+                for embedding in batch_embeddings:
+                    if hasattr(embedding, 'shape'):
+                        # 如果是多维数组，使用适当的聚合方法
+                        if len(embedding.shape) == 1:
+                            score = float(np.linalg.norm(embedding))
+                        else:
+                            avg_embedding = embedding.mean(axis=0)
+                            score = float(np.linalg.norm(avg_embedding))
                     else:
-                        batch_scores.append(0.5)
+                        score = float(np.linalg.norm(np.array(embedding)))
                         
-                all_cross_scores.extend(batch_scores)
+                    batch_scores.append(score)
+                    
+                all_rerank_scores.extend(batch_scores)
                 
             except Exception as rerank_error:
                 logger.warning(f"Reranking batch error: {rerank_error}")
-                all_cross_scores.extend([0.5] * len(batch_inputs))
+                batch_indices = range(i, min(i + rerank_batch_size, len(top100)))
+                batch_original_scores = [top100[idx][1] for idx in batch_indices]
+                all_rerank_scores.extend(batch_original_scores)
 
-        rerank_final = list(zip([p[0] for p in top100], all_cross_scores))
+        rerank_final = list(zip([p[0] for p in top100], all_rerank_scores))
         rerank_final.sort(key=lambda x: x[1], reverse=True)
         top30 = rerank_final[:30]
 
         top30_values = [path_kv[pk] for pk, _ in top30]
-        logger.info(f"Cross-encoder reranked 30 paths")
+        logger.info(f"Successfully reranked 30 paths using BAAI/bge-reranker-large")
         return {"neo4j_retrieval": top30_values}
 
     except Exception as e:
@@ -1198,24 +1207,28 @@ def build_graphrag_agent(resources):
     return builder.compile()
 
 # ==================== Streamlit UI ====================
-# Loading the data and building the graph
 resources = load_all_resources()
 graph = build_graphrag_agent(resources)
 
 st.title("DGADIS - Dental Assistant")
 
-# Initializing
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "graph_state" not in st.session_state:
     st.session_state.graph_state = None
 
-# Display chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Processing user input
+if st.session_state.graph_state:
+    st.sidebar.subheader("Debug Info")
+    st.sidebar.write(f"Graph State Keys: {list(st.session_state.graph_state.keys())}")
+    st.sidebar.write(f"Has llm_answer: {'llm_answer' in st.session_state.graph_state}")
+    if 'llm_answer' in st.session_state.graph_state:
+        st.sidebar.write(f"llm_answer length: {len(str(st.session_state.graph_state.get('llm_answer', '')))}")
+    st.sidebar.write(f"Has need_user_reply: {st.session_state.graph_state.get('need_user_reply', False)}")
+
 if prompt := st.chat_input("What is your dental question?"):
 
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -1231,14 +1244,19 @@ if prompt := st.chat_input("What is your dental question?"):
         inputs["user_reply_text"] = prompt
         inputs["need_user_reply"] = False
         print("=== CONTINUATION CALL with user_reply_text ===")
+    
     try:
         new_state = graph.invoke(inputs)
         st.session_state.graph_state = new_state
         
         print("=== GRAPH RESPONSE ===")
+        print(f"All keys in new_state: {list(new_state.keys())}")
         print(f"need_user_reply: {new_state.get('need_user_reply')}")
         print(f"ai_message: {new_state.get('ai_message')}")
-        print(f"flow_stopped: {new_state.get('flow_stopped')}")
+        print(f"llm_answer exists: {'llm_answer' in new_state}")
+        if 'llm_answer' in new_state:
+            print(f"llm_answer type: {type(new_state.get('llm_answer'))}")
+            print(f"llm_answer content: {new_state.get('llm_answer')}")
         
         if new_state.get("need_user_reply"):
             ai_message = new_state.get("ai_message", "Please provide more information.")
@@ -1250,6 +1268,9 @@ if prompt := st.chat_input("What is your dental question?"):
         elif new_state.get("llm_answer"):
             answer = new_state.get("llm_answer")
             
+            if not isinstance(answer, str):
+                answer = str(answer)
+            
             st.session_state.messages.append({"role": "assistant", "content": answer})
             
             with st.chat_message("assistant"):
@@ -1260,11 +1281,16 @@ if prompt := st.chat_input("What is your dental question?"):
             print("=== FLOW COMPLETED ===")
             
         else:
-            status_msg = "Processing completed."
+            status_msg = "Processing completed. No final answer generated."
             st.session_state.messages.append({"role": "assistant", "content": status_msg})
             
             with st.chat_message("assistant"):
                 st.markdown(status_msg)
+                
+            st.sidebar.error("No llm_answer found in state")
+            st.sidebar.write("Available keys:", list(new_state.keys()))
+            if 'messages' in new_state:
+                st.sidebar.write("Last few messages:", [str(msg) for msg in new_state['messages'][-2:]])
                 
     except Exception as e:
         import traceback
@@ -1276,6 +1302,11 @@ if prompt := st.chat_input("What is your dental question?"):
         
         with st.chat_message("assistant"):
             st.markdown(error_msg)
+
+if st.session_state.messages:
+    st.sidebar.subheader("Conversation Status")
+    st.sidebar.write(f"Total messages: {len(st.session_state.messages)}")
+    st.sidebar.write(f"Graph state active: {st.session_state.graph_state is not None}")
 
 if st.session_state.messages and st.button("Start New Conversation"):
     st.session_state.messages = []
