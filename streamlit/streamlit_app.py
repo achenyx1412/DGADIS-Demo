@@ -1000,52 +1000,7 @@ def neo4j_retrieval(state: MyState, resources):
         
         scored_paths = list(zip(path_keys, sim_scores))
         scored_paths.sort(key=lambda x: x[1], reverse=True)
-        top100 = scored_paths[:100]
-
-        logger.info("Performing cross-encoder reranking with BAAI/bge-reranker-large using text generation...")
-        
-        all_rerank_scores = []
-        rerank_batch_size = 4
-        
-        for i in range(0, len(top100), rerank_batch_size):
-            batch_items = top100[i:i + rerank_batch_size]
-            try:
-                batch_inputs = []
-                for path_key, score in batch_items:
-                    text_pair = f"Query: {query_text} Document: {path_key}"
-                    batch_inputs.append(text_pair)
-
-                batch_results = similarity_client.text_generation(
-                    batch_inputs,
-                    model="BAAI/bge-reranker-large",
-                    max_new_tokens=10
-                )
-                
-                batch_scores = []
-                for result in batch_results:
-                    try:
-                        import re
-                        numbers = re.findall(r"[-+]?\d*\.\d+|\d+", result)
-                        if numbers:
-                            score = float(numbers[0])
-                            score = max(0.0, min(1.0, score))
-                        else:
-                            score = 0.5
-                    except:
-                        score = 0.5
-                        
-                    batch_scores.append(score)
-                    
-                all_rerank_scores.extend(batch_scores)
-                
-            except Exception as rerank_error:
-                logger.warning(f"Reranking batch error: {rerank_error}")
-                batch_original_scores = [score for _, score in batch_items]
-                all_rerank_scores.extend(batch_original_scores)
-
-        rerank_final = list(zip([p[0] for p in top100], all_rerank_scores))
-        rerank_final.sort(key=lambda x: x[1], reverse=True)
-        top30 = rerank_final[:30]
+        top30 = scored_paths[:30]
 
         top30_values = [path_kv[pk] for pk, _ in top30]
         logger.info(f"Successfully reranked 30 paths using BAAI/bge-reranker-large")
