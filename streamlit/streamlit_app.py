@@ -1002,55 +1002,45 @@ def neo4j_retrieval(state: MyState, resources):
         scored_paths.sort(key=lambda x: x[1], reverse=True)
         top100 = scored_paths[:100]
 
-        logger.info("Performing cross-encoder reranking with BAAI/bge-reranker-large...")
-        
-        rerank_inputs = []
-        for path_key, score in top100:
-            text_pair = f"{query_text} [SEP] {path_key}"
-            rerank_inputs.append(text_pair)
+        logger.info("Performing cross-encoder reranking with BAAI/bge-reranker-large using text generation...")
         
         all_rerank_scores = []
-        rerank_batch_size = 8
+        rerank_batch_size = 4
         
-        for i in range(0, len(rerank_inputs), rerank_batch_size):
-            batch_inputs = rerank_inputs[i:i + rerank_batch_size]
+        for i in range(0, len(top100), rerank_batch_size):
+            batch_items = top100[i:i + rerank_batch_size]
             try:
-                batch_embeddings = similarity_client.feature_extraction(
+                batch_inputs = []
+                for path_key, score in batch_items:
+                    text_pair = f"Query: {query_text} Document: {path_key}"
+                    batch_inputs.append(text_pair)
+
+                batch_results = similarity_client.text_generation(
                     batch_inputs,
                     model="BAAI/bge-reranker-large",
+                    max_new_tokens=10
                 )
                 
                 batch_scores = []
-                for embedding in batch_embeddings:
+                for result in batch_results:
                     try:
-                        if not isinstance(embedding, np.ndarray):
-                            embedding_array = np.array(embedding)
+                        import re
+                        numbers = re.findall(r"[-+]?\d*\.\d+|\d+", result)
+                        if numbers:
+                            score = float(numbers[0])
+                            score = max(0.0, min(1.0, score))
                         else:
-                            embedding_array = embedding
-                        
-                        if embedding_array.ndim == 1:
-                            score = float(np.linalg.norm(embedding_array))
-                        elif embedding_array.ndim == 2:
-                            avg_embedding = embedding_array.mean(axis=0)
-                            score = float(np.linalg.norm(avg_embedding))
-                        else:
-                            flattened = embedding_array.flatten()
-                            score = float(np.linalg.norm(flattened))
-                            
-                        score = max(0.0, min(1.0, score))
-                        
-                    except Exception as embed_error:
-                        logger.warning(f"Embedding processing error: {embed_error}")
+                            score = 0.5
+                    except:
                         score = 0.5
-                    
+                        
                     batch_scores.append(score)
                     
                 all_rerank_scores.extend(batch_scores)
                 
             except Exception as rerank_error:
                 logger.warning(f"Reranking batch error: {rerank_error}")
-                batch_indices = range(i, min(i + rerank_batch_size, len(top100)))
-                batch_original_scores = [top100[idx][1] for idx in batch_indices]
+                batch_original_scores = [score for _, score in batch_items]
                 all_rerank_scores.extend(batch_original_scores)
 
         rerank_final = list(zip([p[0] for p in top100], all_rerank_scores))
@@ -1063,7 +1053,7 @@ def neo4j_retrieval(state: MyState, resources):
 
     except Exception as e:
         logger.warning(f"Rerank error: {e}")
-        fallback_values = list(path_kv.values())[:50]
+        fallback_values = list(path_kv.values())[:30]
         return {"neo4j_retrieval": fallback_values}
 
 def decide_router(state: MyState) -> dict:
