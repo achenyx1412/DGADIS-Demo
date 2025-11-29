@@ -956,13 +956,23 @@ def neo4j_retrieval(state: MyState, resources):
             continue
 
     try:
-        if not similarity_client:
-            raise ValueError("HuggingFace client not initialized")
-            
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError:
+            logger.warning("sentence-transformers not installed, skipping reranking")
+            top30 = scored_paths[:30]
+            top30_values = [path_kv[pk] for pk, _ in top30]
+            return {"neo4j_retrieval": top30_values}
+        
+        if "cross_encoder_model" not in globals():
+            logger.info("Initializing Cross-Encoder model for reranking...")
+            global cross_encoder_model
+            cross_encoder_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+        
         path_keys = list(path_kv.keys())
         
         if not path_keys:
-            logger.warning("No paths found for reranking")
+            logger.warning("No paths found for retrieval")
             return {"neo4j_retrieval": []}
         
         logger.info("Calculating similarity scores using feature extraction...")
@@ -1002,61 +1012,35 @@ def neo4j_retrieval(state: MyState, resources):
         scored_paths.sort(key=lambda x: x[1], reverse=True)
         top100 = scored_paths[:100]
 
-        logger.info("Performing cross-encoder reranking with BAAI/bge-reranker-large...")
+        logger.info("Performing cross-encoder reranking with local model...")
         
-        all_rerank_scores = []
-        rerank_batch_size = 4
+        sentence_pairs = []
+        for path_key, score in top100:
+            sentence_pairs.append((query_text, path_key))
         
-        for i in range(0, len(top100), rerank_batch_size):
-            batch_items = top100[i:i + rerank_batch_size]
-            try:
-                batch_inputs = []
-                for path_key, score in batch_items:
-                    text_pair = f"{query_text} [SEP] {path_key}"
-                    batch_inputs.append(text_pair)
-                batch_embeddings = similarity_client.feature_extraction(
-                    batch_inputs,
-                    model="BAAI/bge-reranker-large",
-                    truncate=True,
-                    normalize=True
-                )
-                
-                batch_scores = []
-                for embedding in batch_embeddings:
-                    try:
-                        if not isinstance(embedding, np.ndarray):
-                            embedding_array = np.array(embedding, dtype=float)
-                        else:
-                            embedding_array = embedding
-
-                        if embedding_array.ndim == 1:
-                            score = float(embedding_array[0])
-                        elif embedding_array.ndim == 2:
-                            score = float(embedding_array[0, 0])
-                        else:
-                            score = float(np.mean(embedding_array))
-                        score = max(0.0, min(1.0, score))
-                        
-                    except Exception as score_error:
-                        logger.warning(f"Score extraction error: {score_error}")
-                        score = 0.5
-                        
-                    batch_scores.append(score)
-                    
+        try:
+            rerank_batch_size = 32
+            all_rerank_scores = []
+            
+            for i in range(0, len(sentence_pairs), rerank_batch_size):
+                batch_pairs = sentence_pairs[i:i + rerank_batch_size]
+                batch_scores = cross_encoder_model.predict(batch_pairs)
                 all_rerank_scores.extend(batch_scores)
-                
-            except Exception as rerank_error:
-                logger.warning(f"Reranking batch error: {rerank_error}")
-                batch_original_scores = [score for _, score in batch_items]
-                all_rerank_scores.extend(batch_original_scores)
+            
+            rerank_final = list(zip([p[0] for p in top100], all_rerank_scores))
+            rerank_final.sort(key=lambda x: x[1], reverse=True)
+            top30 = rerank_final[:30]
 
-        rerank_final = list(zip([p[0] for p in top100], all_rerank_scores))
-        rerank_final.sort(key=lambda x: x[1], reverse=True)
-        top30 = rerank_final[:30]
-
-        top30_values = [path_kv[pk] for pk, _ in top30]
-        logger.info(f"Successfully reranked 30 paths using BAAI/bge-reranker-large")
-        return {"neo4j_retrieval": top30_values}
+            top30_values = [path_kv[pk] for pk, _ in top30]
+            logger.info(f"Successfully reranked 30 paths using Cross-Encoder")
+            return {"neo4j_retrieval": top30_values}
+            
+        except Exception as cross_encoder_error:
+            logger.warning(f"Cross-Encoder reranking failed: {cross_encoder_error}")
+            top30 = scored_paths[:30]
+            top30_values = [path_kv[pk] for pk, _ in top30]
+            logger.info(f"Using similarity-ranked 30 paths (Cross-Encoder fallback)")
+            return {"neo4j_retrieval": top30_values}
 
     except Exception as e:
         logger.warning(f"Rerank error: {e}")
