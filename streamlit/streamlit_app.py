@@ -1001,21 +1001,21 @@ def neo4j_retrieval(state: MyState, resources):
         scored_paths = list(zip(path_keys, sim_scores))
         scored_paths.sort(key=lambda x: x[1], reverse=True)
         top100 = scored_paths[:100]
+
         logger.info("Performing cross-encoder reranking with BAAI/bge-reranker-large...")
         
         all_rerank_scores = []
-        rerank_batch_size = 8
+        rerank_batch_size = 4
         
         for i in range(0, len(top100), rerank_batch_size):
             batch_items = top100[i:i + rerank_batch_size]
             try:
-                batch_pairs = []
+                batch_inputs = []
                 for path_key, score in batch_items:
-                    pair = [query_text, path_key]
-                    batch_pairs.append(pair)
- 
+                    text_pair = f"{query_text} [SEP] {path_key}"
+                    batch_inputs.append(text_pair)
                 batch_embeddings = similarity_client.feature_extraction(
-                    batch_pairs,
+                    batch_inputs,
                     model="BAAI/bge-reranker-large",
                     truncate=True,
                     normalize=True
@@ -1025,16 +1025,16 @@ def neo4j_retrieval(state: MyState, resources):
                 for embedding in batch_embeddings:
                     try:
                         if not isinstance(embedding, np.ndarray):
-                            embedding_array = np.array(embedding)
+                            embedding_array = np.array(embedding, dtype=float)
                         else:
                             embedding_array = embedding
+
                         if embedding_array.ndim == 1:
                             score = float(embedding_array[0])
                         elif embedding_array.ndim == 2:
                             score = float(embedding_array[0, 0])
                         else:
                             score = float(np.mean(embedding_array))
-                        
                         score = max(0.0, min(1.0, score))
                         
                     except Exception as score_error:
