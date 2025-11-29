@@ -1000,7 +1000,59 @@ def neo4j_retrieval(state: MyState, resources):
         
         scored_paths = list(zip(path_keys, sim_scores))
         scored_paths.sort(key=lambda x: x[1], reverse=True)
-        top30 = scored_paths[:30]
+        top100 = scored_paths[:100]
+        logger.info("Performing cross-encoder reranking with BAAI/bge-reranker-large...")
+        
+        all_rerank_scores = []
+        rerank_batch_size = 8
+        
+        for i in range(0, len(top100), rerank_batch_size):
+            batch_items = top100[i:i + rerank_batch_size]
+            try:
+                batch_pairs = []
+                for path_key, score in batch_items:
+                    pair = [query_text, path_key]
+                    batch_pairs.append(pair)
+ 
+                batch_embeddings = similarity_client.feature_extraction(
+                    batch_pairs,
+                    model="BAAI/bge-reranker-large",
+                    truncate=True,
+                    normalize=True
+                )
+                
+                batch_scores = []
+                for embedding in batch_embeddings:
+                    try:
+                        if not isinstance(embedding, np.ndarray):
+                            embedding_array = np.array(embedding)
+                        else:
+                            embedding_array = embedding
+                        if embedding_array.ndim == 1:
+                            score = float(embedding_array[0])
+                        elif embedding_array.ndim == 2:
+                            score = float(embedding_array[0, 0])
+                        else:
+                            score = float(np.mean(embedding_array))
+                        
+                        score = max(0.0, min(1.0, score))
+                        
+                    except Exception as score_error:
+                        logger.warning(f"Score extraction error: {score_error}")
+                        score = 0.5
+                        
+                    batch_scores.append(score)
+                    
+                all_rerank_scores.extend(batch_scores)
+                
+            except Exception as rerank_error:
+                logger.warning(f"Reranking batch error: {rerank_error}")
+                batch_original_scores = [score for _, score in batch_items]
+                all_rerank_scores.extend(batch_original_scores)
+
+        rerank_final = list(zip([p[0] for p in top100], all_rerank_scores))
+        rerank_final.sort(key=lambda x: x[1], reverse=True)
+        top30 = rerank_final[:30]
 
         top30_values = [path_kv[pk] for pk, _ in top30]
         logger.info(f"Successfully reranked 30 paths using BAAI/bge-reranker-large")
@@ -1008,7 +1060,7 @@ def neo4j_retrieval(state: MyState, resources):
 
     except Exception as e:
         logger.warning(f"Rerank error: {e}")
-        fallback_values = list(path_kv.values())[:30]
+        fallback_values = list(path_kv.values())[:50]
         return {"neo4j_retrieval": fallback_values}
 
 def decide_router(state: MyState) -> dict:
