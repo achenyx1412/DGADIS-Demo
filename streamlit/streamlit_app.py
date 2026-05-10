@@ -1166,7 +1166,7 @@ def build_graphrag_agent(resources):
 resources = load_all_resources()
 graph = build_graphrag_agent(resources)
 
-st.title("DGADIS - Dental Assistant")
+st.title("“皓齿灵图”——基于口腔知识图谱的智能决策平台")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
